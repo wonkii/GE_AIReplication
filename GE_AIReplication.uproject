@@ -5,6 +5,16 @@
 	"Description": "",
 	"Modules": [
 		{
+			"Name": "AIReplicationCore",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "AIReplicationNet",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
 			"Name": "GE_AIReplication",
 			"Type": "Runtime",
 			"LoadingPhase": "Default",

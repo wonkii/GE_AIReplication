@@ -1,14 +1,31 @@
-Binaries
-DerivedDataCache
-Intermediate
-Saved
-.vscode
-.vs
+# Unreal generated output (including project plugins).
+Binaries/
+DerivedDataCache/
+Intermediate/
+Saved/
+
+# Local IDE state and generated solutions.
+.vscode/
+.vs/
+.idea/
 *.VC.db
+*.VC.opendb
 *.opensdf
 *.opendb
 *.sdf
 *.sln
+*.slnx
 *.suo
 *.xcodeproj
 *.xcworkspace
+*.DotSettings.user
+
+# Local tools and configuration.
+__pycache__/
+.venv/
+.pytest_cache/
+.env
+.env.local
+/Config/Local/
+
+# Keep Build resources, shared Config, Source, Content and .vsconfig tracked.

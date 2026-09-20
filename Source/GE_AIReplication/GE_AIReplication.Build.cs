@@ -21,7 +21,10 @@ public class GE_AIReplication : ModuleRules
 			"Slate"
 		});
 
-		PrivateDependencyModuleNames.AddRange(new string[] { });
+		PrivateDependencyModuleNames.AddRange(new string[] {
+			"AIReplicationCore",
+			"AIReplicationNet"
+		});
 
 		PublicIncludePaths.AddRange(new string[] {
 			"GE_AIReplication",
