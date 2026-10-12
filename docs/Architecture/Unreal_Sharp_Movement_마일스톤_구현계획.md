@@ -1,6 +1,6 @@
 # GE_AIReplication Enemy AI Sharp Movement 구현 계획
 
-> 2026-10-03 저장소 확인 결과를 반영했다. 아래의 `기존`은 파일 존재와 코드·설정으로 확인한 사실이고, `예정`은 아직 구현하지 않은 실험 파일이다. 기존 템플릿의 동작을 실험 기능의 완료로 간주하지 않는다.
+> 2026-10-11: M0~M8 C++ 실행 경로를 구현했다. 아래의 설계·판단 게이트는 실측 평가 기준이며, 코드 구현만으로 성능 입증이 끝난 것은 아니다. 현재 파일과 에디터 설정은 [구현 목록](SharpMovement_구현_파일_및_설정.md)을 참고한다.
 
 ## 0. 현재 프로젝트 상태
 
@@ -8,10 +8,10 @@
 |---|---|
 | Unreal 프로젝트 | 저장소 루트의 `GE_AIReplication.uproject`, `EngineAssociation: 5.8` |
 | 런타임 모듈 | `AIReplicationCore`, `AIReplicationNet`, `GE_AIReplication` 세 모듈이 `.uproject`에 등록됨 |
-| 모듈 의존성 | `GE_AIReplication`은 Core·Net을 비공개 참조하고, Net은 Core를 비공개 참조함. Core·Net에는 현재 모듈 시작 코드만 있음 |
+| 모듈 의존성 | `GE_AIReplication`은 공개 헤더 타입을 위해 Core·Net을 공개 참조함. Core에는 순수 Detector, Net에는 복제 Snapshot USTRUCT가 있음 |
 | 기존 AI 참고 코드 | `Variant_Combat/AI/CombatEnemy.*`는 `ACharacter`와 CMC를 사용하며 `AddImpulse()` 호출 예시가 있음. Combat·SideScrolling에는 StateTree 기반 AIController와 Blueprint 에셋이 있음 |
 | 현재 기본 맵 | `Config/DefaultEngine.ini`의 게임·에디터 기본 맵은 `ThirdPerson/Lvl_ThirdPerson` |
-| 실험 구현 | `SharpMovementExperiment` 맵, 전용 Enemy·Impulse Volume·Detector·Snapshot·Predictor·측정 코드는 아직 없음 |
+| 실험 구현 | M0 실험 맵과 설정 에셋이 있으며 Enemy·Volume·Detector·Snapshot·Mesh Predictor·기록·오프라인 보고서 C++가 구현됨. 장면 연결·영상·실측 평가는 에디터에서 수행 |
 
 `CombatEnemy`의 Impulse 코드는 참고 자료일 뿐이다. 전투 피해, StateTree, 물리 블렌딩이 측정에 섞이지 않도록 첫 실험은 전용 Enemy와 맵에서 시작한다. 기존 `Variant_*`, `ThirdPerson`, 공용 캐릭터 에셋은 이동하거나 이름을 바꾸지 않는다.
 

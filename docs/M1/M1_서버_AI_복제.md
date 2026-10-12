@@ -1,6 +1,8 @@
 # M1. 서버 권한 Enemy AI와 기본 이동 복제
 
-> 상태: 개발 예정. [전체 아키텍처](../Architecture/Unreal_Sharp_Movement_마일스톤_구현계획.md) · 선행: [M0](../M0/M0_실험_설정.md) · 다음: [M2](../M2/M2_Impulse_재현.md)
+> 상태: C++ 구현, Editor 에셋 배치·런타임 검증 예정. [전체 아키텍처](../Architecture/Unreal_Sharp_Movement_마일스톤_구현계획.md) · 선행: [M0](../M0/M0_실험_설정.md) · 다음: [M2](../M2/M2_Impulse_재현.md)
+
+구현 설계는 [Spline 기반 전체 개발계획서](M1_Spline_기반_전체_개발계획서.md), 실제 배치·수동 시작·설정 위치는 [M1 Editor 설정 가이드](M1_Editor_설정_가이드.md)를 참고한다. 자동화 테스트와 에셋 생성 스크립트는 생략하며 Blueprint와 Spline은 Editor에서 직접 설정한다. 첫 수동 확인은 Listen Server와 클라이언트 2개로 진행하고, Dedicated Server 제어·검증은 후속으로 남긴다.
 
 기존 `Variant_Combat/AI/CombatEnemy.*`는 참고 코드다. 전용 Enemy의 서버·클라이언트 실행은 아직 검증되지 않았다.
 
@@ -21,8 +23,12 @@
 **구현 작업**
 
 1. `ASharpEnemyCharacter`를 `ACharacter`에서 만들고 `bReplicates=true`, `bReplicateMovement=true`로 설정한다.
-2. AIController가 서버에서만 동일한 시작점·목적지로 이동 명령을 내리게 한다. 첫 실험은 충돌이 없는 직선 이동이다.
+
+2. AIController가 서버에서만 동일한 시작점·목적지로 이동 명령을 내리게 한다.
+첫 실험은 충돌이 없는 직선 이동이다.
+
 3. Dedicated Server 1개와 Client 2개에서 Enemy의 Authority/Simulated Proxy 역할, 위치·속도·Movement Mode를 디버그 표시한다.
+
 4. Actor relevancy와 dormancy 때문에 테스트 중 Enemy가 갱신 대상에서 빠지지 않는지 확인한다.
 
 **산출물:** 재현 가능한 AI 이동 장면과 역할 검증 로그.

@@ -5,7 +5,7 @@ public class AIReplicationNet : ModuleRules
 	public AIReplicationNet(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
-		PublicDependencyModuleNames.Add("Core");
+		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject" });
 		PrivateDependencyModuleNames.Add("AIReplicationCore");
 	}
 }

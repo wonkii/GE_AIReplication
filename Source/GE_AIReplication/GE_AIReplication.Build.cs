@@ -18,12 +18,14 @@ public class GE_AIReplication : ModuleRules
 			"StateTreeModule",
 			"GameplayStateTreeModule",
 			"UMG",
-			"Slate"
+			"Slate",
+			"AIReplicationCore",
+			"AIReplicationNet"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] {
-			"AIReplicationCore",
-			"AIReplicationNet"
+			"Json",
+			"JsonUtilities"
 		});
 
 		PublicIncludePaths.AddRange(new string[] {

@@ -1,6 +1,10 @@
 # M2. 서버 전용 Impulse Volume과 Ground Truth
 
-> 상태: 개발 예정. [전체 아키텍처](../Architecture/Unreal_Sharp_Movement_마일스톤_구현계획.md) · 선행: [M1](../M1/M1_서버_AI_복제.md) · 다음: [M3](../M3/M3_CMC_기준선_측정.md)
+> 상태: C++ 구현 완료, Editor 에셋 설정·PIE 수동 확인 필요. [전체 아키텍처](../Architecture/Unreal_Sharp_Movement_마일스톤_구현계획.md) · 선행: [M1](../M1/M1_서버_AI_복제.md) · 다음: [M3](../M3/M3_CMC_기준선_측정.md)
+
+실제 연결·조절값과 기능별 소스 파일은 [M2 Editor 설정 및 기능별 파일](M2_Editor_설정_및_기능별_파일.md)을 참고한다.
+
+상세 구현·관찰 절차는 [M2 서버 관찰 기반 전체 개발계획서](M2_서버_관찰_기반_전체_개발계획서.md)를 따른다. PIE의 Server Debug Drawing으로 클라이언트 화면에서 서버 Capsule·속도를 함께 관찰하고, Visual Logger와 서버 Recorder로 사건 전후를 기록한다.
 
 Volume은 Ground Truth를 생성한다. Detector에 Overlap 또는 AddImpulse 호출 사실을 전달하지 않는다.
 

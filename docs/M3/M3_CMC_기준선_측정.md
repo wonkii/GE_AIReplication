@@ -1,6 +1,6 @@
 # M3. 기본 CMC의 오차와 Rubber Banding 측정
 
-> 상태: 개발 예정. [전체 아키텍처](../Architecture/Unreal_Sharp_Movement_마일스톤_구현계획.md) · 선행: [M2](../M2/M2_Impulse_재현.md) · 다음: [M4](../M4/M4_Detector.md)
+> 상태: C++ 구현 완료, 에디터 시나리오 설정 및 실측 평가 대기. [전체 아키텍처](../Architecture/Unreal_Sharp_Movement_마일스톤_구현계획.md) · 선행: [M2](../M2/M2_Impulse_재현.md) · 다음: [M4](../M4/M4_Detector.md)
 
 기본 CMC의 오차와 시각적 보정이 실제로 나타나는 조건을 확정한 뒤 다음 단계를 평가한다.
 
@@ -31,3 +31,9 @@
 **판단 게이트:** 첫 수신 이후 CMC가 이미 충분히 정확하면 M6의 복잡한 예측기 대신 M5의 `SingleShot` 개선을 우선 평가한다. 문제가 거의 없다면 업데이트 빈도·네트워크 조건·Impulse 범위를 조절해 **문제 발생 조건**을 먼저 확정한다.
 
 공식 참고: [Network Smoothing](https://dev.epicgames.com/documentation/en-us/unreal-engine/understanding-networked-movement-in-the-character-movement-component-for-unreal-engine), [Networking Insights](https://dev.epicgames.com/documentation/en-us/unreal-engine/networking-insights-in-unreal-engine), [Network Emulation](https://dev.epicgames.com/documentation/unreal-engine/using-network-emulation-in-unreal-engine).
+
+## 현재 구현과 설정
+
+[단계별 에디터 설정](M3_Editor_설정.md) · [전체 기능–파일 목록](../Architecture/SharpMovement_구현_파일_및_설정.md)
+
+코드 구현과 실험에서의 성능 입증은 구분합니다. 자동화 테스트는 실행하지 않았으며, 영상·실측 표·최종 결론은 에디터 실험 후 작성합니다.

@@ -6,13 +6,13 @@
 
 | 모듈 | 역할 |
 |---|---|
-| `AIReplicationCore` | 공통 이동 상태, 예측 및 오차·갱신 정책 계산을 구현할 영역 |
-| `AIReplicationNet` | 스냅샷 전송, 복제 및 수신 상태 재구성을 구현할 영역 |
+| `AIReplicationCore` | Actor·복제와 독립적인 이동 샘플·급변 Classifier |
+| `AIReplicationNet` | 급변 Snapshot USTRUCT와 순번 비교 계약 |
 | `GE_AIReplication` | 인계서의 Lab 역할. 기존 캐릭터·AI·UI와 실험 환경을 통합 |
 
 의존성은 `GE_AIReplication → AIReplicationNet → AIReplicationCore`이며, 통합 모듈은 Core도 직접 참조한다. Core는 Actor·통신·UI에 의존하지 않는다.
 
-이 현재 공개 인터페이스에 필요한 엔진 Core만 공개 의존성으로 두고, 프로젝트 모듈 간 연결은 비공개 의존성으로 시작한다. Net에 Actor나 복제 기능을 구현할 때 `CoreUObject`·`Engine` 등을 실제 사용 위치에 맞게 추가한다. 기존 통합 모듈의 AI·UI 의존성은 템플릿에서 사용하므로 유지한다.
+통합 모듈의 공개 헤더에서 사용하는 Core·Net은 공개 의존성이다. Net의 USTRUCT 때문에 CoreUObject도 공개 의존성으로 추가했다. Core는 엔진 Core만 참조한다. 기존 통합 모듈의 AI·UI 의존성은 템플릿에서 사용하므로 유지한다.
 
 ## Git 관리
 
@@ -26,3 +26,7 @@
 
 구성 기준: [Epic 모듈 문서](https://dev.epicgames.com/documentation/unreal-engine/unreal-engine-modules)
 [Git 속성 문서](https://git-scm.com/docs/gitattributes).
+
+## SharpMovement 구현
+
+M0~M8의 서버 이동·Impulse·독립 Detector·전송 정책·클라이언트 Mesh 예측·기록·보고서를 연결했다. [기능별 파일과 단계별 에디터 설정](Architecture/SharpMovement_구현_파일_및_설정.md)을 참고한다. 자동화 테스트는 생략했으며, 성능 평가는 에디터 실측 이후 수행한다.

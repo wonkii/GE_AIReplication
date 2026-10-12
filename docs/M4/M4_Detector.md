@@ -1,6 +1,6 @@
 # M4. Volume과 독립적인 Sharp Movement Detector
 
-> 상태: 개발 예정. [전체 아키텍처](../Architecture/Unreal_Sharp_Movement_마일스톤_구현계획.md) · 선행: [M3](../M3/M3_CMC_기준선_측정.md) · 다음: [M5](../M5/M5_전송_정책.md)
+> 상태: C++ 구현 완료, 에디터 시나리오 설정 및 실측 평가 대기. [전체 아키텍처](../Architecture/Unreal_Sharp_Movement_마일스톤_구현계획.md) · 선행: [M3](../M3/M3_CMC_기준선_측정.md) · 다음: [M5](../M5/M5_전송_정책.md)
 
 Detector 담당 단계. Core는 Actor와 복제에 의존하지 않는 계산만 수행하고, Component는 서버 이동 업데이트 이후의 실제 Velocity를 관측한다.
 
@@ -34,3 +34,9 @@ Detector 담당 단계. Core는 Actor와 복제에 의존하지 않는 계산만
 **완료 기준:** Volume 참조가 없는 Detector가 목표 Impulse를 포착하고, 정상 이동에서의 오탐 빈도를 보고할 수 있다.
 
 공식 참고: [On Character Movement Updated](https://dev.epicgames.com/documentation/en-us/unreal-engine/BlueprintAPI/Character/OnCharacterMovementUpdated), [CMC Velocity·Acceleration](https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/Engine/UCharacterMovementComponent).
+
+## 현재 구현과 설정
+
+[단계별 에디터 설정](M4_Editor_설정.md) · [전체 기능–파일 목록](../Architecture/SharpMovement_구현_파일_및_설정.md)
+
+코드 구현과 실험에서의 성능 입증은 구분합니다. 자동화 테스트는 실행하지 않았으며, 영상·실측 표·최종 결론은 에디터 실험 후 작성합니다.
