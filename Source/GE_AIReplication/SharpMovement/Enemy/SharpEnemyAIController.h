@@ -27,4 +27,9 @@ private:
 
     // 현재 기준선 이동을 진행하는지 여부
     bool bBaselineMovementActive = false;
+
+    // 현재 이동 방향
+    //  1 : 월드 +X 방향
+    // -1 : 월드 -X 방향
+    int32 BaselineMoveDirection = 1;
 };
