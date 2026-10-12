@@ -108,6 +108,7 @@ Saved/Experiments/<BatchId>/
 | `CapsuleX/Y/Z` | 복제된 Capsule 위치 (`GetActorLocation()`) |
 | `MeshX/Y/Z` | 화면에 보이는 위치. Mesh 월드 위치에서 Mesh 기본 상대 위치를 뺀 값이며, smoothing이 없으면 Capsule 위치와 같다 |
 | `UpdateCount` | 이 Actor의 이동 상태를 받은 누적 횟수 (`OnRep_ReplicatedMovement` 호출 수) |
+| `FrameMs` | 선택. 그 프레임의 시간(ms). 클라이언트 프레임 저하 확인용 |
 | `RxStateTime` | 선택. 마지막으로 받은 이동 상태의 서버 시각. `ACharacter::GetReplicatedServerLastTransformUpdateTimeStamp()`를 쓸 수 있는지 확인이 필요하다 (서버 월드 시각과 기준이 같은지) |
 
 ### 3.3 ground_truth.csv
@@ -161,6 +162,7 @@ python Scripts/Analysis/sharp_metrics.py Saved/Experiments/<BatchId> --min-speed
 - 화면 위치(Mesh)는 Mesh 위치에서 Capsule과 Mesh 사이의 평소 간격을 뺀 값이다. 평소 간격은 실행 전체의 중앙값으로 추정한다.
 - 변환한 폴더에는 `converted_from_logs.txt`가 생기고, 분석 결과에 로그 변환 데이터라는 경고가 붙는다.
 - Recorder가 만든 CSV가 이미 있으면 덮어쓰지 않는다 (`--force`로 덮어쓰기).
+- 시각 기준은 `--clock`으로 고른다. `wall`(기본)은 로그 줄 앞의 기록 시각을, `server`는 로그의 `ServerTime`을 쓴다. 서버와 클라이언트가 같은 PC에서 돌면 모든 로그가 같은 시계로 찍히므로 `wall`이 실제 화면 어긋남을 그대로 보여준다. 클라이언트의 `ServerTime`은 서버 시각을 추정한 값이라 네트워크 지연만큼 같이 밀리고, 그러면 지연 때문에 생긴 오차가 상쇄돼서 보이지 않는다. 2026-10-12 실행에서 `server`로는 N0·N2 오차가 21cm로 같았지만, `wall`로는 11cm와 35cm로 지연(편도 50ms) 효과가 드러났다. 다른 PC끼리 돌릴 때만 `server`를 쓴다. 로그 시각을 읽을 수 없으면 자동으로 `server`를 쓴다.
 
 로그가 0.5초 간격이라 직진 구간의 평균 오차 정도만 의미가 있다. Enemy가 10m를 이동하는 데 2초 정도라 이동 중 샘플이 몇 개 안 되고, 급변 순간의 최대 오차나 회복 시간은 잴 수 없다. 정지 구간을 빼려면 분석할 때 `--min-speed 100`처럼 서버 속력 기준을 준다.
 
@@ -186,6 +188,8 @@ python Scripts/Analysis/sharp_metrics.py Saved/Experiments --out results --windo
 보정 거리는 프레임 사이 Mesh 이동 중 실제 서버 이동으로 설명되지 않는 부분이다. 이 값이 `--snap-threshold`(기본 20cm)를 넘은 횟수를 스냅 횟수로 센다.
 
 `--min-speed`를 주면 서버 속력이 그 값보다 낮은 샘플은 오차 계산에서 뺀다. 수신 횟수는 전체 구간 기준으로 센다.
+
+시간 어긋남 진단은 클라이언트 위치가 서버 경로를 몇 초 늦게 따라가는지(`BestShiftSec`)를 찾고, 그만큼 당겨서 맞췄을 때 남는 오차(`CapMeanAfterShift`)를 함께 보여준다. 추정 지연이 넣은 지연보다 훨씬 크면 클라이언트의 서버 시각 추정이 어긋났거나 프레임이 떨어진 것이고, 당긴 뒤에도 오차가 크면 샘플 간격 문제나 실제 보정 오차다. 클라이언트 CSV에 `FrameMs`(프레임 시간)가 있으면 평균 25ms 또는 최대 200ms를 넘는 클라이언트에 경고를 붙인다.
 
 ### 5.2 결과 파일
 
@@ -225,7 +229,7 @@ python Scripts/Analysis/sharp_metrics.py Saved/_synthetic
 ## 6. 한계와 남은 결정 사항
 
 - 전송량(bytes/s)은 이 스크립트에서 계산하지 않는다. Networking Insights(`-NetTrace`)로 확인한다.
-- 클라이언트의 `GetServerWorldTimeSeconds()`는 추정값이라 지연이 크면 시각이 어긋나고, 그만큼(속도 × 시각 차이) 오차 값에 섞인다.
+- 클라이언트의 `GetServerWorldTimeSeconds()`는 추정값이라 네트워크 지연만큼 같이 밀린다. 이 값으로 기록하면 지연 때문에 생긴 오차가 상쇄돼 보이지 않으므로, Recorder는 같은 PC의 공통 시계(예: `FPlatformTime::Seconds()` 또는 UTC 시각)로도 기록해야 한다. 3장의 시각 기준(`GetServerWorldTimeSeconds`)은 이에 맞춰 다시 정해야 한다.
 - `RxStateTime`을 기록하지 않으면 첫 수신이 사건 전 상태일 수 있다. 이 경우 `events.csv`의 `FirstUpdateExact`가 0으로 표시된다.
 - Metrics를 구현계획대로 C++(`SharpMovementMetrics`)로 옮길지, Python 후처리로 둘지 정해야 한다.
 - CSV 열 이름은 Recorder 구현에 맞춰 확정해야 한다.

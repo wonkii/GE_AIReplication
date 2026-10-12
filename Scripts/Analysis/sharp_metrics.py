@@ -95,6 +95,8 @@ class ClientSeries:
     update_total: float = 0.0  # UpdateCount 증가량 합계 (샘플 간격이 길어도 수신 횟수를 그대로 셈)
     t_first: float = 0.0  # --min-speed로 거르기 전 전체 구간
     t_last: float = 0.0
+    cap: list = field(default_factory=list)  # 클라이언트 Capsule 위치 (시간 어긋남 진단용)
+    frame_ms: list = field(default_factory=list)  # 클라이언트 프레임 시간 (FrameMs 열이 있을 때만)
 
 
 @dataclass
@@ -145,6 +147,7 @@ def build_client(rows: list[dict[str, str]], server: dict[str, ServerTrack],
         t, ec, em, corr, rec, rec_state = [], [], [], [], [], []
         prev_mesh = prev_srv = prev_count = None
         update_total, t_first, t_last = 0.0, None, None
+        caps, frames = [], []
         for r in samples:
             time = fnum(r, "ServerTime")
             srv = track.at(time) if time is not None else None
@@ -165,6 +168,10 @@ def build_client(rows: list[dict[str, str]], server: dict[str, ServerTrack],
                     prev_mesh = prev_srv = None  # 구간이 끊기면 보정 거리를 이어서 계산하지 않음
                     continue
             cap, mesh = vec(r, "Capsule"), vec(r, "Mesh")
+            caps.append(cap)
+            frame = fnum(r, "FrameMs")
+            if frame is not None:
+                frames.append(frame)
             t.append(time)
             ec.append(dist(cap, srv))
             em.append(dist(mesh, srv))
@@ -174,7 +181,7 @@ def build_client(rows: list[dict[str, str]], server: dict[str, ServerTrack],
                 corr.append(dist(sub(mesh, prev_mesh), sub(srv, prev_srv)))
             prev_mesh, prev_srv = mesh, srv
         if t:
-            out[actor] = ClientSeries(t, ec, em, corr, rec, rec_state, update_total, t_first, t_last)
+            out[actor] = ClientSeries(t, ec, em, corr, rec, rec_state, update_total, t_first, t_last, caps, frames)
     return out
 
 
@@ -401,12 +408,37 @@ def event_metrics(trial: Trial, args) -> list[dict]:
     return rows
 
 
+def best_time_shift(track: ServerTrack, s: ClientSeries, max_shift=0.6, step=0.01):
+    """클라이언트 위치가 서버 경로를 몇 초 늦게 따라가는지 추정한다.
+
+    클라이언트 시각 t의 위치를 서버 시각 t - shift의 위치와 비교해서 평균 거리가 가장 작은 shift를 찾는다.
+    shift가 지연(RTT/2 정도)보다 훨씬 크면 시계(GetServerWorldTimeSeconds) 어긋남이나 프레임 저하를 의심한다.
+    shift를 빼고도 남는 오차가 크면 샘플 간격(보간) 문제나 실제 보정 오차다.
+    """
+    best = None
+    n = int(round(max_shift / step))
+    for k in range(-n, n + 1):
+        shift = k * step
+        total, count = 0.0, 0
+        for time, cap in zip(s.t, s.cap):
+            srv = track.at(time - shift)
+            if srv is not None:
+                total += dist(cap, srv)
+                count += 1
+        if count >= max(3, len(s.t) // 2):
+            mean = total / count
+            if best is None or mean < best[1]:
+                best = (shift, mean)
+    return best
+
+
 def trial_metrics(trial: Trial, args) -> list[dict]:
     rows = []
     for client_id, actors in trial.clients.items():
         for actor, s in actors.items():
             span = s.t_last - s.t_first
             intervals = [b - a for a, b in zip(s.receipts, s.receipts[1:])]
+            shift = best_time_shift(trial.server[actor], s) if s.cap else None
             rows.append({
                 "RunId": trial.run_id,
                 "TrialId": trial.trial_id,
@@ -427,6 +459,10 @@ def trial_metrics(trial: Trial, args) -> list[dict]:
                 "MeshP95": r(percentile(s.err_mesh, 0.95)),
                 "MeshMax": r(max(s.err_mesh)),
                 "SnapCount": sum(1 for c in s.correction if c > args.snap_threshold),
+                "BestShiftSec": r(shift[0], 3) if shift else None,
+                "CapMeanAfterShift": r(shift[1]) if shift else None,
+                "AvgFrameMs": r(statistics.fmean(s.frame_ms), 1) if s.frame_ms else None,
+                "MaxFrameMs": r(max(s.frame_ms), 1) if s.frame_ms else None,
             })
     return rows
 
@@ -503,7 +539,8 @@ def stats(values: list) -> dict:
 
 SUMMARY_EVENT_KEYS = ["CapPeak", "MeshPeak", "CapArea", "CapTimeAbove", "CapRecovery", "MeshRecovery",
                       "FirstUpdateDelay", "CapPeakAfterFirst", "MaxCorrection", "SnapCount"]
-SUMMARY_TRIAL_KEYS = ["UpdatesPerSec", "CapMean", "CapP95", "CapMax", "MeshMean", "MeshP95", "MeshMax"]
+SUMMARY_TRIAL_KEYS = ["UpdatesPerSec", "CapMean", "CapP95", "CapMax", "MeshMean", "MeshP95", "MeshMax",
+                      "BestShiftSec", "CapMeanAfterShift", "AvgFrameMs", "MaxFrameMs"]
 
 
 def summarize(event_rows: list[dict], trial_rows: list[dict]) -> list[dict]:
@@ -599,6 +636,18 @@ def write_report(path: Path, summary, det_summary, trials, args, warnings):
             ("MeshMax_mean", "Mesh 최대"),
         ]),
         "",
+        "## 시간 어긋남 진단",
+        "",
+        "클라이언트 위치가 서버 경로를 몇 초 늦게 따라가는지(추정 지연)와, 그만큼 당겨서 맞췄을 때 남는 오차다. "
+        "추정 지연이 넣은 지연(N2면 약 0.05초)보다 훨씬 크면 시계 어긋남이나 프레임 저하를, "
+        "당긴 뒤에도 오차가 크면 샘플 간격(보간) 문제나 실제 보정 오차를 의심한다.",
+        "",
+        md_table(summary, [
+            ("Mode", "모드"), ("NetProfile", "네트워크"), ("CapMean_mean", "Capsule 평균"),
+            ("BestShiftSec_mean", "추정 지연(s)"), ("CapMeanAfterShift_mean", "당긴 뒤 평균 오차"),
+            ("AvgFrameMs_mean", "평균 프레임(ms)"), ("MaxFrameMs_max", "최대 프레임(ms)"),
+        ]),
+        "",
         "## 급변 사건 구간 (사건 평균)",
         "",
     ]
@@ -680,7 +729,16 @@ def main(argv=None):
         if t.meta and not t.meta.get("Valid", True):
             warnings.append(f"{p}: run_meta.json에서 실행 검증 실패로 표시됨")
         event_rows += event_metrics(t, args)
-        trial_rows += trial_metrics(t, args)
+        new_rows = trial_metrics(t, args)
+        trial_rows += new_rows
+        warned = set()
+        for row in new_rows:
+            if row["ClientId"] in warned:
+                continue
+            if row["AvgFrameMs"] and (row["AvgFrameMs"] > 25 or (row["MaxFrameMs"] or 0) > 200):
+                warned.add(row["ClientId"])
+                warnings.append(f"{p}: 클라이언트 {row['ClientId']} 프레임 저하 (평균 {row['AvgFrameMs']}ms, "
+                                f"최대 {row['MaxFrameMs']}ms). 실행 중 창 클릭이나 컴퓨터 부하 확인")
         summary, matches = detector_metrics(t, args)
         if summary:
             det_rows.append(summary)
