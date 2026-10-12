@@ -31,6 +31,13 @@ public:
 	UPROPERTY(ReplicatedUsing = OnRep_Identity, BlueprintReadOnly, Category = "Sharp Experiment")
 	FSharpExperimentIdentity Identity;
 
+	// 서버에서 확정된 실험 Identity 조회
+	// 클라이언트에서 아직 Identity를 받지 못했다면 nullptr 반환
+	const FSharpExperimentIdentity* GetResolvedIdentity() const
+	{
+		return Identity.RunId.IsEmpty() ? nullptr : &Identity;
+	}
+
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 protected:
