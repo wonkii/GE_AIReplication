@@ -8,6 +8,9 @@
     - 실행마다 결과 폴더에 run_meta.json(실행 조건)과 서버·클라이언트 로그를 남기고,
       로그의 RunId/TrialId/Mode가 서버·클라이언트에서 일치하는지 검사한다.
     - Recorder에는 -SharpOutDir, -SharpClientId를 넘긴다. Recorder는 CSV를 이 폴더에 써야 한다 (Scripts/Analysis/README.md).
+    - Enemy(PR #3)가 있으면 서버에서 모드별 전송 정책이 적용됐는지, 클라이언트에 Enemy가 복제됐는지도 검사한다.
+    - Adaptive 모드에서만 서버의 net.UseAdaptiveNetUpdateFrequency를 1로, 나머지 모드에서는 0으로 넘긴다.
+    - -NetTrace를 쓰면 Tools/summarize_network_cost.py 입력 양식에 실행 조건을 미리 채운 CSV를 결과 폴더에 만든다.
 
     결과 폴더: <프로젝트>/Saved/Experiments/<BatchId>/<RunId>/T<TrialId>/
     RunId    : <BatchId>-<Mode>  (같은 모드의 반복 실행은 같은 RunId, TrialId만 다름)
@@ -141,6 +144,45 @@ function Read-Identity([string]$LogPath, [string]$Role) {
     return @{ RunId = $g[1].Value; TrialId = [int]$g[2].Value; Mode = $g[3].Value }
 }
 
+function Read-PolicyBinds([string]$LogPath) {
+    # SharpEnemyCharacter가 서버에서 정책을 붙인 결과: Actor별로 마지막 줄 사용
+    $binds = [ordered]@{}
+    if (-not (Test-Path $LogPath)) { return $binds }
+    $pattern = '\[M5\]\[PolicyBind\] Actor=(\S+) ActorId=(-?\d+) RunId=(\S+) TrialId=(\d+) Mode=(\S+) InitSuccess=(\d) NetUpdateHz=([\d.]+)'
+    foreach ($hit in (Select-String -Path $LogPath -Pattern $pattern)) {
+        $g = $hit.Matches[0].Groups
+        $binds[$g[1].Value] = [ordered]@{
+            Actor = $g[1].Value; ActorId = [int]$g[2].Value; Mode = $g[5].Value
+            InitSuccess = ($g[6].Value -eq '1'); NetUpdateHz = [double]$g[7].Value
+        }
+    }
+    return $binds
+}
+
+function Get-ClientEnemyCount([string]$LogPath) {
+    # 클라이언트에서 Simulated Proxy로 생성된 Enemy 수 (SharpEnemyCharacter BeginPlay 로그)
+    if (-not (Test-Path $LogPath)) { return 0 }
+    $pattern = '\[M1\]\[Enemy\] Actor=(\S+) NetMode=Client Role=SimulatedProxy'
+    $actors = Select-String -Path $LogPath -Pattern $pattern | ForEach-Object { $_.Matches[0].Groups[1].Value }
+    return @($actors | Sort-Object -Unique).Count
+}
+
+function Add-NetworkCostRows([string]$Path, $Meta, [int]$ActorCount) {
+    # Tools/summarize_network_cost.py 입력 양식. 패킷·비트 값은 Networking Insights에서 직접 채운다.
+    $utf8 = New-Object System.Text.UTF8Encoding($true)
+    if (-not (Test-Path $Path)) {
+        $header = 'RunId,TrialId,Mode,ActorCount,Connection,EventSource,LagMs,LossPct,WindowLabel,WindowStartSec,WindowEndSec,PacketCount,TracedPacketBits,EnemyExclusiveBits,SnapshotExclusiveBits,Notes'
+        [IO.File]::AppendAllText($Path, $header + "`r`n", $utf8)
+    }
+    $inv = [Globalization.CultureInfo]::InvariantCulture
+    foreach ($id in $Meta.Clients.Keys) {
+        $c = $Meta.Clients[$id]
+        $loss = [string]::Format($inv, '{0}', $c.LossPct)
+        $line = "$($Meta.RunId),$($Meta.TrialId),$($Meta.Mode),$ActorCount,Client$id-$($c.Profile),None,$($c.LagMs),$loss,,,,,,,,T$($Meta.TrialId)\server.utrace"
+        [IO.File]::AppendAllText($Path, $line + "`r`n", $utf8)
+    }
+}
+
 function Save-Meta($Meta, [string]$Dir) {
     $Meta | ConvertTo-Json -Depth 6 | Set-Content -Path (Join-Path $Dir 'run_meta.json') -Encoding UTF8
 }
@@ -175,6 +217,9 @@ foreach ($m in $Mode) {
             "-SharpRunId=$runId", "-SharpTrialId=$trial", "-SharpMode=$m",
             "-SharpOutDir=$outDir", "-abslog=$serverLog"
         )
+        # Adaptive는 엔진 전역 설정이 켜져 있어야 동작하고, 다른 모드는 꺼져 있어야 결과가 섞이지 않는다
+        $adaptiveCVar = if ($m -eq 'Adaptive') { 1 } else { 0 }
+        $serverArgs += "-ini:Engine:[ConsoleVariables]:net.UseAdaptiveNetUpdateFrequency=$adaptiveCVar"
         if ($NetTrace) {
             $serverArgs += @('-trace=net', '-NetTrace=1', "-tracefile=$(Join-Path $outDir 'server.utrace')")
         }
@@ -206,7 +251,7 @@ foreach ($m in $Mode) {
             RunId = $runId; TrialId = $trial; Mode = $m; BatchId = $BatchId
             Map = $Map; Project = $Project; Editor = $Editor; Port = $Port
             ConnectWaitSec = $ConnectWaitSec; WarmupSec = $WarmupSec; MeasureSec = $MeasureSec
-            ClientMaxFps = $ClientMaxFps; NetTrace = [bool]$NetTrace
+            ClientMaxFps = $ClientMaxFps; NetTrace = [bool]$NetTrace; AdaptiveCVar = $adaptiveCVar
             StartedAt = (Get-Date).ToString('o'); DryRun = [bool]$DryRun
             ServerArgs = Join-Args $serverArgs
             Clients = $clients
@@ -255,6 +300,36 @@ foreach ($m in $Mode) {
                     $issues += "클라이언트 $i 식별값이 서버와 다름: $($cli.RunId)/$($cli.TrialId)/$($cli.Mode)"
                 }
             }
+            # Enemy와 전송 정책 (PR #3 SharpEnemyCharacter 로그)
+            $binds = Read-PolicyBinds $serverLog
+            $meta.Enemies = @($binds.Values)
+            $meta.EnemyCount = $binds.Count
+            if ($binds.Count -eq 0) {
+                $issues += '서버 로그에 Enemy 정책 적용 기록([M5][PolicyBind]) 없음. Enemy가 있는 버전(PR #3 이후)인지 확인'
+            }
+            foreach ($b in $binds.Values) {
+                if (-not $b.InitSuccess) { $issues += "Enemy $($b.Actor): 모드 $($b.Mode) 정책 적용 실패 (server.log의 [M5][Policy] InitRejected 확인)" }
+                elseif ($b.Mode -ne $m) { $issues += "Enemy $($b.Actor): 적용된 모드 $($b.Mode)가 요청한 $m 과 다름" }
+            }
+            $rejected = Select-String -Path $serverLog -Pattern '\[M5\]\[Policy\] InitRejected Reason=(\S+)' -ErrorAction SilentlyContinue |
+                ForEach-Object { $_.Matches[0].Groups[1].Value } | Sort-Object -Unique
+            if ($rejected) { $issues += "정책 적용 거부 사유: $($rejected -join ', ')" }
+            if (Select-String -Path $serverLog -Pattern 'SYNTHETIC_TEST_ENABLED' -Quiet -ErrorAction SilentlyContinue) {
+                $issues += '진단용 가짜 사건 Actor(SharpPolicyDiagnosticActor)가 켜져 있음. 실험 데이터로 쓰면 안 됨'
+            }
+            if (Select-String -Path $serverLog -Pattern 'GlobalAdaptiveContamination' -Quiet -ErrorAction SilentlyContinue) {
+                Write-Warning 'Adaptive 전역 설정이 켜진 상태로 다른 모드가 실행됨 (server.log의 GlobalAdaptiveContamination 확인)'
+            }
+            $clientEnemies = [ordered]@{}
+            for ($i = 1; $i -le $ClientProfiles.Count; $i++) {
+                $n = Get-ClientEnemyCount (Join-Path $outDir "client_$i.log")
+                $clientEnemies["$i"] = $n
+                if ($binds.Count -gt 0 -and $n -lt $binds.Count) {
+                    $issues += "클라이언트 $i 에 Enemy가 $n / $($binds.Count) 개만 복제됨"
+                }
+            }
+            $meta.ClientEnemyCounts = $clientEnemies
+
             # Recorder 구현 전에는 CSV가 없을 수 있으므로 경고만 남긴다
             $csvMissing = @()
             if (-not (Test-Path (Join-Path $outDir 'server_samples.csv'))) { $csvMissing += 'server_samples.csv' }
@@ -269,7 +344,14 @@ foreach ($m in $Mode) {
         $meta.Valid = (-not $DryRun) -and ($issues.Count -eq 0)
         Save-Meta $meta $outDir
         if ($issues.Count -gt 0) { $issues | ForEach-Object { Write-Warning $_ } }
-        $results += [pscustomobject]@{ RunId = $runId; Trial = $trial; Valid = $meta.Valid; ForcedKill = $meta.ForcedKill; Issues = ($issues -join '; ') }
+        if ($NetTrace -and -not $DryRun) {
+            $enemyCount = 0
+            if ($meta.Contains('EnemyCount')) { $enemyCount = [int]$meta.EnemyCount }
+            Add-NetworkCostRows (Join-Path (Join-Path $BatchDir $runId) 'network_cost_inputs.csv') $meta $enemyCount
+        }
+        $validText = if ($DryRun) { 'DryRun' } else { [string]$meta.Valid }  # DryRun은 실행하지 않으므로 검사 결과가 없음
+        $enemyText = if ($meta.Contains('EnemyCount')) { $meta.EnemyCount } else { '-' }
+        $results += [pscustomobject]@{ RunId = $runId; Trial = $trial; Valid = $validText; Enemies = $enemyText; ForcedKill = $meta.ForcedKill; Issues = ($issues -join '; ') }
 
         if (-not $DryRun) { Start-Sleep -Seconds 3 }  # 포트 해제 대기
     }
@@ -278,4 +360,6 @@ foreach ($m in $Mode) {
 Write-Host ""
 $results | Format-Table -AutoSize | Out-String -Width 200 | Write-Host
 $analysis = Join-Path $PSScriptRoot 'Analysis\sharp_metrics.py'
+$convert = Join-Path $PSScriptRoot 'Analysis\convert_logs.py'
+Write-Host "Recorder가 없을 때 (로그 변환): python `"$convert`" `"$BatchDir`""
 Write-Host "분석: python `"$analysis`" `"$BatchDir`""

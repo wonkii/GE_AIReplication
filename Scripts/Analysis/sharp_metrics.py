@@ -60,6 +60,15 @@ def sub(a, b):
 class ServerTrack:
     t: list[float] = field(default_factory=list)
     p: list[tuple[float, float, float]] = field(default_factory=list)
+    v: list[tuple[float, float, float]] = field(default_factory=list)
+
+    def speed_at(self, time: float) -> float | None:
+        """time 직전 서버 샘플의 속력 (cm/s). 속도 기록이 없으면 None."""
+        if not self.v or not self.t or time < self.t[0] or time > self.t[-1]:
+            return None
+        i = max(0, bisect.bisect_right(self.t, time) - 1)
+        vx, vy, vz = self.v[i]
+        return math.sqrt(vx * vx + vy * vy + vz * vz)
 
     def at(self, time: float) -> tuple[float, float, float] | None:
         """서버 궤적을 time 시각으로 선형 보간한다. 범위를 벗어나면 None."""
@@ -83,6 +92,9 @@ class ClientSeries:
     correction: list[float]  # 프레임 간 Mesh 이동 중 실제 서버 이동으로 설명되지 않는 양
     receipts: list[float]  # 이동 상태 수신 시각 (UpdateCount 증가 시점)
     receipt_states: list[float | None]  # 각 수신에 담긴 상태의 서버 시각 (RxStateTime 열이 있을 때만)
+    update_total: float = 0.0  # UpdateCount 증가량 합계 (샘플 간격이 길어도 수신 횟수를 그대로 셈)
+    t_first: float = 0.0  # --min-speed로 거르기 전 전체 구간
+    t_last: float = 0.0
 
 
 @dataclass
@@ -105,7 +117,7 @@ def build_server(rows: list[dict[str, str]]) -> dict[str, ServerTrack]:
         t = fnum(r, "ServerTime")
         if t is None:
             continue
-        tracks.setdefault(r.get("ActorId", "0"), []).append((t, vec(r, "Pos")))
+        tracks.setdefault(r.get("ActorId", "0"), []).append((t, vec(r, "Pos"), vec(r, "Vel")))
     out = {}
     for actor, samples in tracks.items():
         samples.sort(key=lambda s: s[0])
@@ -115,11 +127,12 @@ def build_server(rows: list[dict[str, str]]) -> dict[str, ServerTrack]:
                 dedup[-1] = s
             else:
                 dedup.append(s)
-        out[actor] = ServerTrack([s[0] for s in dedup], [s[1] for s in dedup])
+        out[actor] = ServerTrack([s[0] for s in dedup], [s[1] for s in dedup], [s[2] for s in dedup])
     return out
 
 
-def build_client(rows: list[dict[str, str]], server: dict[str, ServerTrack]) -> dict[str, ClientSeries]:
+def build_client(rows: list[dict[str, str]], server: dict[str, ServerTrack],
+                 min_speed: float = 0.0) -> dict[str, ClientSeries]:
     per_actor: dict[str, list[dict[str, str]]] = {}
     for r in rows:
         per_actor.setdefault(r.get("ActorId", "0"), []).append(r)
@@ -131,13 +144,27 @@ def build_client(rows: list[dict[str, str]], server: dict[str, ServerTrack]) -> 
         samples.sort(key=lambda r: fnum(r, "ServerTime", 0.0))
         t, ec, em, corr, rec, rec_state = [], [], [], [], [], []
         prev_mesh = prev_srv = prev_count = None
+        update_total, t_first, t_last = 0.0, None, None
         for r in samples:
             time = fnum(r, "ServerTime")
             srv = track.at(time) if time is not None else None
             if srv is None:
                 continue
-            cap, mesh = vec(r, "Capsule"), vec(r, "Mesh")
             count = fnum(r, "UpdateCount")
+            t_first = time if t_first is None else t_first
+            t_last = time
+            if prev_count is not None and count is not None and count > prev_count:
+                update_total += count - prev_count
+                rec.append(time)
+                rec_state.append(fnum(r, "RxStateTime"))
+            if count is not None:
+                prev_count = count
+            if min_speed > 0:
+                speed = track.speed_at(time)
+                if speed is None or speed < min_speed:
+                    prev_mesh = prev_srv = None  # 구간이 끊기면 보정 거리를 이어서 계산하지 않음
+                    continue
+            cap, mesh = vec(r, "Capsule"), vec(r, "Mesh")
             t.append(time)
             ec.append(dist(cap, srv))
             em.append(dist(mesh, srv))
@@ -145,12 +172,9 @@ def build_client(rows: list[dict[str, str]], server: dict[str, ServerTrack]) -> 
                 corr.append(0.0)
             else:
                 corr.append(dist(sub(mesh, prev_mesh), sub(srv, prev_srv)))
-            if prev_count is not None and count is not None and count > prev_count:
-                rec.append(time)
-                rec_state.append(fnum(r, "RxStateTime"))
-            prev_mesh, prev_srv, prev_count = mesh, srv, count
+            prev_mesh, prev_srv = mesh, srv
         if t:
-            out[actor] = ClientSeries(t, ec, em, corr, rec, rec_state)
+            out[actor] = ClientSeries(t, ec, em, corr, rec, rec_state, update_total, t_first, t_last)
     return out
 
 
@@ -162,7 +186,7 @@ def client_id_of(path: Path, rows: list[dict[str, str]]) -> str:
     return parts[1] if len(parts) >= 3 else stem
 
 
-def load_trial(path: Path) -> Trial:
+def load_trial(path: Path, min_speed: float = 0.0) -> Trial:
     meta = {}
     if (path / META_FILE).exists():
         meta = json.loads((path / META_FILE).read_text(encoding="utf-8-sig"))
@@ -172,7 +196,7 @@ def load_trial(path: Path) -> Trial:
     clients = {}
     for cpath in sorted(path.glob(CLIENT_GLOB)):
         rows = read_csv(cpath)
-        clients[client_id_of(cpath, rows)] = build_client(rows, server)
+        clients[client_id_of(cpath, rows)] = build_client(rows, server, min_speed)
     gt = read_csv(path / GROUND_TRUTH_FILE) if (path / GROUND_TRUTH_FILE).exists() else []
     det = read_csv(path / DETECTOR_FILE) if (path / DETECTOR_FILE).exists() else []
     starts = [tr.t[0] for tr in server.values() if tr.t]
@@ -381,7 +405,7 @@ def trial_metrics(trial: Trial, args) -> list[dict]:
     rows = []
     for client_id, actors in trial.clients.items():
         for actor, s in actors.items():
-            span = s.t[-1] - s.t[0] if len(s.t) > 1 else 0.0
+            span = s.t_last - s.t_first
             intervals = [b - a for a, b in zip(s.receipts, s.receipts[1:])]
             rows.append({
                 "RunId": trial.run_id,
@@ -392,8 +416,8 @@ def trial_metrics(trial: Trial, args) -> list[dict]:
                 "ActorId": actor,
                 "DurationSec": r(span),
                 "Samples": len(s.t),
-                "Updates": len(s.receipts),
-                "UpdatesPerSec": r(len(s.receipts) / span) if span > 0 else None,
+                "Updates": int(s.update_total),
+                "UpdatesPerSec": r(s.update_total / span) if span > 0 else None,
                 "MeanUpdateInterval": r(statistics.fmean(intervals), 4) if intervals else None,
                 "MaxUpdateInterval": r(max(intervals), 4) if intervals else None,
                 "CapMean": r(time_mean(s.t, s.err_cap)),
@@ -479,7 +503,7 @@ def stats(values: list) -> dict:
 
 SUMMARY_EVENT_KEYS = ["CapPeak", "MeshPeak", "CapArea", "CapTimeAbove", "CapRecovery", "MeshRecovery",
                       "FirstUpdateDelay", "CapPeakAfterFirst", "MaxCorrection", "SnapCount"]
-SUMMARY_TRIAL_KEYS = ["UpdatesPerSec", "CapMean", "CapP95", "MeshMean"]
+SUMMARY_TRIAL_KEYS = ["UpdatesPerSec", "CapMean", "CapP95", "CapMax", "MeshMean", "MeshP95", "MeshMax"]
 
 
 def summarize(event_rows: list[dict], trial_rows: list[dict]) -> list[dict]:
@@ -561,18 +585,35 @@ def write_report(path: Path, summary, det_summary, trials, args, warnings):
         f"- 회복: 오차가 사건 전 {args.pre}s 평균 + {args.recover_threshold}cm 미만으로 {args.recover_hold}s 유지되기 시작한 시점",
         f"- 스냅 기준: 한 프레임 보정 거리 {args.snap_threshold}cm 초과",
         "- 단위: cm, s. 오차는 같은 서버 시각으로 보간한 서버 위치와의 3D 거리",
+    ]
+    if args.min_speed > 0:
+        lines.append(f"- 서버 속력 {args.min_speed}cm/s 이상인 샘플만 사용 (`--min-speed`)")
+    lines += [
         "",
-        "## 모드·네트워크 조건별 요약 (급변 사건 기준, 평균)",
+        "## 전체 구간 오차 (Trial 평균)",
         "",
         md_table(summary, [
+            ("Mode", "모드"), ("NetProfile", "네트워크"), ("Trials", "Trial"),
+            ("UpdatesPerSec_mean", "수신/s"), ("CapMean_mean", "Capsule 평균"), ("CapP95_mean", "Capsule p95"),
+            ("CapMax_mean", "Capsule 최대"), ("MeshMean_mean", "Mesh 평균"), ("MeshP95_mean", "Mesh p95"),
+            ("MeshMax_mean", "Mesh 최대"),
+        ]),
+        "",
+        "## 급변 사건 구간 (사건 평균)",
+        "",
+    ]
+    if not any(row.get("SharpEvents") for row in summary):
+        lines += ["급변 사건 기록(`ground_truth.csv`)이 없어 생략함.", ""]
+    else:
+        lines += [md_table(summary, [
             ("Mode", "모드"), ("NetProfile", "네트워크"), ("Trials", "Trial"), ("SharpEvents", "사건"),
             ("UpdatesPerSec_mean", "수신/s"), ("CapMean_mean", "평균 오차"),
             ("CapPeak_mean", "Capsule 최대"), ("MeshPeak_mean", "Mesh 최대"),
             ("CapRecovery_mean", "회복 시간"), ("FirstUpdateDelay_mean", "첫 수신"),
             ("CapPeakAfterFirst_mean", "첫 수신 후 최대"), ("MaxCorrection_mean", "최대 보정"),
             ("UnrecoveredRate", "미회복 비율"),
-        ]),
-        "",
+        ]), ""]
+    lines += [
         "worst case와 표준편차는 `summary.csv`의 `_max`, `_std` 열 참고.",
         "",
     ]
@@ -613,6 +654,8 @@ def main(argv=None):
     ap.add_argument("--snap-threshold", type=float, default=20.0, help="스냅 판정 프레임 보정 거리 (cm)")
     ap.add_argument("--match-window", type=float, default=0.3, help="Impulse 후 감지를 인정하는 최대 시간 (s)")
     ap.add_argument("--match-before", type=float, default=0.05, help="Impulse 직전 감지 허용 오차 (s)")
+    ap.add_argument("--min-speed", type=float, default=0.0,
+                    help="서버 속력이 이 값(cm/s) 이상인 샘플만 분석. 정지 구간을 빼고 이동 중 오차만 볼 때 사용")
     args = ap.parse_args(argv)
 
     paths = find_trials(args.roots)
@@ -626,12 +669,14 @@ def main(argv=None):
     for p in paths:
         if out.resolve() in p.parents:
             continue
-        t = load_trial(p)
+        t = load_trial(p, args.min_speed)
         trials.append(t)
         if not t.clients:
             warnings.append(f"{p}: 클라이언트 CSV 없음")
         if not t.ground_truth:
             warnings.append(f"{p}: {GROUND_TRUTH_FILE} 없음, 사건별 지표 생략")
+        if (p / "converted_from_logs.txt").exists():
+            warnings.append(f"{p}: 로그에서 변환한 데이터 (0.5초 간격 샘플이라 최대 오차·회복 시간은 정확하지 않음)")
         if t.meta and not t.meta.get("Valid", True):
             warnings.append(f"{p}: run_meta.json에서 실행 검증 실패로 표시됨")
         event_rows += event_metrics(t, args)

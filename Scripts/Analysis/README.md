@@ -10,6 +10,7 @@
 |---|---|
 | `Scripts/RunSharpTrial.ps1` | 서버 1개와 클라이언트 여러 개 실행, 네트워크 조건 적용, 반복 실행, 로그 검사 |
 | `Scripts/Analysis/sharp_metrics.py` | Recorder CSV 분석, 모드·네트워크 조건별 요약표 생성 |
+| `Scripts/Analysis/convert_logs.py` | Recorder가 생기기 전까지 SharpEnemyCharacter 로그를 CSV로 변환 |
 | `Scripts/Analysis/make_synthetic_run.py` | 분석 스크립트 확인용 가짜 데이터 생성 (실험값 아님) |
 
 Python 3.8 이상이면 따로 설치할 패키지는 없다. PowerShell 스크립트는 Windows 기본인 5.1 기준으로 작성했다.
@@ -36,7 +37,15 @@ Python 3.8 이상이면 따로 설치할 패키지는 없다. PowerShell 스크�
 2. 서버 로그에 `LogSharpExperiment ... Role=Server`가 찍히면 클라이언트를 실행한다.
 3. 접속 대기, 워밍업, 측정 시간(기본 10초, 5초, 60초)만큼 기다린다.
 4. 클라이언트, 서버 순서로 창을 닫는다. 15초 안에 꺼지지 않으면 강제로 종료한다.
-5. 서버와 클라이언트 로그의 RunId, TrialId, Mode가 같은지 검사하고 결과를 `run_meta.json`의 `Valid`에 남긴다.
+5. 로그를 검사하고 결과를 `run_meta.json`의 `Valid`에 남긴다. 하나라도 걸리면 `Valid`는 False가 되고 이유가 `Issues`에 들어간다.
+   - 서버와 클라이언트의 RunId, TrialId, Mode가 같은지
+   - 서버의 모든 Enemy에 요청한 모드의 전송 정책이 적용됐는지 (`[M5][PolicyBind] ... InitSuccess=1`)
+   - 각 클라이언트에 Enemy가 서버와 같은 수만큼 복제됐는지 (`[M1][Enemy] ... Role=SimulatedProxy`)
+   - 진단용 가짜 사건 Actor(`SharpPolicyDiagnosticActor`)가 꺼져 있는지
+
+Adaptive 모드는 엔진 전역 설정 `net.UseAdaptiveNetUpdateFrequency`가 켜져 있어야 동작하고, 다른 모드는 꺼져 있어야 결과가 섞이지 않는다. 그래서 서버에 `-ini:Engine:[ConsoleVariables]:net.UseAdaptiveNetUpdateFrequency=`로 Adaptive일 때 1, 나머지는 0을 넘긴다. 이 방식이 실제로 적용되는지는 Adaptive로 한 번 실행해서 `Valid`가 True인지(정책 적용 거부 사유 `AdaptiveGlobalDisabled`가 없는지)로 확인해야 한다.
+
+`-NetTrace`를 쓰면 `<RunId>/network_cost_inputs.csv`에 Trial·클라이언트별로 실행 조건을 미리 채운 줄이 생긴다. `Tools/summarize_network_cost.py`의 입력 양식이며, 빈 칸(구간, 패킷 수, 비트 수)은 Networking Insights에서 `server.utrace`를 열어 직접 채운다. 빈 칸이 남아 있으면 그 도구가 오류를 낸다.
 
 ### 2.2 네트워크 프로필
 
@@ -58,6 +67,7 @@ Python 3.8 이상이면 따로 설치할 패키지는 없다. PowerShell 스크�
 ```text
 Saved/Experiments/<BatchId>/
 └─ <BatchId>-<Mode>/            RunId
+   ├─ network_cost_inputs.csv   -NetTrace를 쓸 때만. 비용 도구 입력 양식 (2.1)
    └─ T<TrialId>/
       ├─ run_meta.json           실행 조건, 클라이언트별 네트워크 프로필, 검사 결과
       ├─ server.log, client_1.log, client_2.log
@@ -132,7 +142,29 @@ Saved/Experiments/<BatchId>/
 - 파일은 1초 정도마다 flush한다. 스크립트가 강제 종료하는 경우에도 마지막 1초 정도만 잃게 하기 위해서다.
 - 측정 시간이 끝나면 서버가 스스로 종료하는 기능(예: `-SharpDurationSec=`)이 있으면 좋다. 지금은 스크립트가 창을 닫아서 종료시킨다.
 
-## 4. 분석 스크립트
+## 4. 로그 변환 (Recorder가 생기기 전까지)
+
+SharpEnemyCharacter(PR #3)는 측정값을 CSV가 아니라 로그로 남긴다. `convert_logs.py`가 이 로그를 3장의 CSV 형식으로 바꿔서 분석 스크립트에 넘길 수 있게 한다.
+
+```bash
+python Scripts/Analysis/convert_logs.py Saved/Experiments/<BatchId>
+python Scripts/Analysis/sharp_metrics.py Saved/Experiments/<BatchId> --min-speed 100
+```
+
+| 로그 | 만드는 파일 |
+|---|---|
+| 서버 `[M2][CMC]` (0.5초마다, 큰 속도 변화가 있으면 추가) | `server_samples.csv` |
+| 클라이언트 `[M3][ClientVisual]` (0.5초마다) | `client_<N>_samples.csv` |
+| 클라이언트 `[M3][BaselineSummary]` (이동이 끝난 뒤 한 번) | `baseline_summary.csv` |
+
+- Actor 구분은 `ExperimentActorId`를 쓰고, 0이면 Actor 이름을 쓴다.
+- 화면 위치(Mesh)는 Mesh 위치에서 Capsule과 Mesh 사이의 평소 간격을 뺀 값이다. 평소 간격은 실행 전체의 중앙값으로 추정한다.
+- 변환한 폴더에는 `converted_from_logs.txt`가 생기고, 분석 결과에 로그 변환 데이터라는 경고가 붙는다.
+- Recorder가 만든 CSV가 이미 있으면 덮어쓰지 않는다 (`--force`로 덮어쓰기).
+
+로그가 0.5초 간격이라 직진 구간의 평균 오차 정도만 의미가 있다. Enemy가 10m를 이동하는 데 2초 정도라 이동 중 샘플이 몇 개 안 되고, 급변 순간의 최대 오차나 회복 시간은 잴 수 없다. 정지 구간을 빼려면 분석할 때 `--min-speed 100`처럼 서버 속력 기준을 준다.
+
+## 5. 분석 스크립트
 
 ```bash
 python Scripts/Analysis/sharp_metrics.py Saved/Experiments/<BatchId>
@@ -141,7 +173,7 @@ python Scripts/Analysis/sharp_metrics.py Saved/Experiments --out results --windo
 
 입력 폴더 아래에서 `server_samples.csv`가 있는 폴더를 모두 찾아 각각 Trial 하나로 분석한다.
 
-### 4.1 계산 방식
+### 5.1 계산 방식
 
 오차는 클라이언트 샘플의 시각에 맞춰 서버 위치를 선형 보간한 뒤 두 위치 사이의 3D 거리로 계산한다.
 
@@ -153,7 +185,9 @@ python Scripts/Analysis/sharp_metrics.py Saved/Experiments --out results --windo
 
 보정 거리는 프레임 사이 Mesh 이동 중 실제 서버 이동으로 설명되지 않는 부분이다. 이 값이 `--snap-threshold`(기본 20cm)를 넘은 횟수를 스냅 횟수로 센다.
 
-### 4.2 결과 파일
+`--min-speed`를 주면 서버 속력이 그 값보다 낮은 샘플은 오차 계산에서 뺀다. 수신 횟수는 전체 구간 기준으로 센다.
+
+### 5.2 결과 파일
 
 결과는 `<입력 폴더>/_analysis/`에 저장된다.
 
@@ -165,7 +199,7 @@ python Scripts/Analysis/sharp_metrics.py Saved/Experiments --out results --windo
 | `trials.csv` | Trial × 클라이언트 × Actor 단위 전체 구간 지표 |
 | `detector_trials.csv`, `detector_events.csv` | 탐지 지연, TP·FN·FP, Precision·Recall |
 
-### 4.3 주요 지표
+### 5.3 주요 지표
 
 | 열 | 의미 | 관련 단계 |
 |---|---|---|
@@ -179,7 +213,7 @@ python Scripts/Analysis/sharp_metrics.py Saved/Experiments --out results --windo
 | `UpdatesPerSec` | 클라이언트가 초당 받은 이동 상태 횟수 | 비용 보조 지표 |
 | `LatencyFromImpulse` | Impulse 호출부터 감지까지의 시간 | M4 |
 
-### 4.4 가짜 데이터로 확인하기
+### 5.4 가짜 데이터로 확인하기
 
 ```bash
 python Scripts/Analysis/make_synthetic_run.py --out Saved/_synthetic
@@ -188,10 +222,12 @@ python Scripts/Analysis/sharp_metrics.py Saved/_synthetic
 
 단순한 모델로 만든 데이터라 수치 자체는 의미가 없고, 분석 코드가 제대로 도는지 확인하는 용도다. 정상이라면 AlwaysHigh, Burst, SingleShot의 첫 수신 시간과 최대 오차가 Default보다 작게 나온다.
 
-## 5. 한계와 남은 결정 사항
+## 6. 한계와 남은 결정 사항
 
 - 전송량(bytes/s)은 이 스크립트에서 계산하지 않는다. Networking Insights(`-NetTrace`)로 확인한다.
 - 클라이언트의 `GetServerWorldTimeSeconds()`는 추정값이라 지연이 크면 시각이 어긋나고, 그만큼(속도 × 시각 차이) 오차 값에 섞인다.
 - `RxStateTime`을 기록하지 않으면 첫 수신이 사건 전 상태일 수 있다. 이 경우 `events.csv`의 `FirstUpdateExact`가 0으로 표시된다.
 - Metrics를 구현계획대로 C++(`SharpMovementMetrics`)로 옮길지, Python 후처리로 둘지 정해야 한다.
 - CSV 열 이름은 Recorder 구현에 맞춰 확정해야 한다.
+- 매 틱 기록하는 Recorder가 필요하다. 다른 파일을 건드리지 않도록 `Measurement/` 폴더에 World Subsystem으로 만드는 방안을 제안한다 (맵이나 Enemy를 수정하지 않고 모든 Enemy를 찾아서 기록).
+- 서버가 초당 약 30번만 패킷을 보내고 있다 (`stat net`의 In Packets). `NetServerMaxTickRate`를 올리지 않으면 AlwaysHigh·Burst의 60Hz 설정이 실제로는 30Hz로 동작한다.
