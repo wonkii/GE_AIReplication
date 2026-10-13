@@ -2,17 +2,21 @@
 
 기존 `GE_AIReplication` 프로젝트에 AI 이동 예측·복제 연구를 위한 모듈 경계를 구성했다. 인계서의 가칭 프로젝트로 이름을 바꾸지 않고, 기존 템플릿과 에셋 참조를 유지한다. 프로젝트 엔진 설정은 UE 5.8이다.
 
+현재 Enemy 이동은 개별 Spline 기반으로 제어한다. [다중 Enemy 설정과 수동 확인](M1/M1_MultiEnemy_Spline_설정.md), [파일 책임과 확장 경계](Architecture/SharpMovement_책임분리.md)를 참고한다. 기존 맵은 Spline 배치와 Manager 연결을 수동으로 설정해야 한다.
+
+Impulse·Detector·Recorder·클라이언트 Mesh 예측·그룹 반복·통합 보고서는 현재 다중 Enemy 구조에 연결되어 있다. 설정과 사용 순서는 [실험 기능 안내](Architecture/SharpMovement_실험기능.md)를 참고한다.
+
 ## 시스템 구분
 
 | 모듈 | 역할 |
 |---|---|
-| `AIReplicationCore` | 공통 이동 상태, 예측 및 오차·갱신 정책 계산을 구현할 영역 |
-| `AIReplicationNet` | 스냅샷 전송, 복제 및 수신 상태 재구성을 구현할 영역 |
+| `AIReplicationCore` | Actor·Overlap·통신에 의존하지 않는 이동 샘플 급변 판정 |
+| `AIReplicationNet` | 이동 사건 Snapshot 데이터 계약 |
 | `GE_AIReplication` | 인계서의 Lab 역할. 기존 캐릭터·AI·UI와 실험 환경을 통합 |
 
 의존성은 `GE_AIReplication → AIReplicationNet → AIReplicationCore`이며, 통합 모듈은 Core도 직접 참조한다. Core는 Actor·통신·UI에 의존하지 않는다.
 
-이 현재 공개 인터페이스에 필요한 엔진 Core만 공개 의존성으로 두고, 프로젝트 모듈 간 연결은 비공개 의존성으로 시작한다. Net에 Actor나 복제 기능을 구현할 때 `CoreUObject`·`Engine` 등을 실제 사용 위치에 맞게 추가한다. 기존 통합 모듈의 AI·UI 의존성은 템플릿에서 사용하므로 유지한다.
+통합 모듈의 공개 헤더가 Core의 판정 설정과 Net의 Snapshot 타입을 사용하므로 두 모듈은 공개 의존성이다. 파일 기록·JSON과 Editor 배치 지원은 비공개 의존성으로 유지한다. 복제와 화면 보정은 통합 모듈의 역할별 컴포넌트가 담당한다.
 
 ## Git 관리
 
@@ -22,7 +26,7 @@
 - `Content` 전체를 LFS로 처리하던 규칙을 확장자 기준으로 바꿔, 그 안의 문서·텍스트도 일반 Git으로 관리할 수 있다. 팀원은 Git LFS를 설치해야 하며 에셋 편집 전 잠금을 사용하는 것이 좋다.
 
 
-서버·클라이언트 전용 타깃, 연구 기능, CI와 원격 저장소 설정은 후속 작업이다. LFS 원격 다운로드·공동 잠금 동작과 서버·클라이언트 실행은 이번 설정만으로 검증된 것이 아니다.
+서버·클라이언트 전용 패키징 타깃, CI와 LFS 공동 잠금 검증은 별도 작업이다. 현재 실행 도구는 Unreal Editor 실행 파일의 서버·게임 모드를 사용한다. 자동화 테스트는 이번 기능 구현에 추가하지 않았다.
 
 구성 기준: [Epic 모듈 문서](https://dev.epicgames.com/documentation/unreal-engine/unreal-engine-modules)
 [Git 속성 문서](https://git-scm.com/docs/gitattributes).
