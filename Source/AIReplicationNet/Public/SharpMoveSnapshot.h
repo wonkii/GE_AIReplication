@@ -6,8 +6,7 @@
 #include "SharpMoveSnapshot.generated.h"
 
 // Network 전송 계약의 예측 모델 식별자.
-// 이 enum은 실제 Predictor가 구현되었다는 뜻이 아니다.
-// EventOnly에서는 None을 사용한다.
+// EventOnly and EventPredictor share payloads; only EventPredictor applies the model.
 UENUM(BlueprintType)
 enum class ESharpPredictionType : uint8
 {
@@ -31,6 +30,15 @@ struct AIREPLICATIONNET_API FSharpMoveSnapshot
     UPROPERTY()
     uint32 SequenceId = 0;
 
+	// Capture from the execution context at observation time, not at dispatch.
+	UPROPERTY()
+	int32 Generation = 0;
+
+	// A resume starts another segment in the same generation. Carry both fields
+	// so the receiver can wait for context despite cross-component RepNotify order.
+	UPROPERTY()
+	int32 Segment = 0;
+
     // Detector가 서버에서 실제 이동 결과를 관찰한 시각(초).
     // 클라이언트 수신 시각, Overlap 시각, ForceNetUpdate 호출 시각이 아니다.
     UPROPERTY()
@@ -45,6 +53,9 @@ struct AIREPLICATIONNET_API FSharpMoveSnapshot
     UPROPERTY()
     FVector PostVelocity = FVector::ZeroVector;
 
+	UPROPERTY() FVector Gravity = FVector::ZeroVector;
+	UPROPERTY() uint8 CustomMovementMode = 0;
+
     // 서버 CMC의 EMovementMode 값을 담는 바이트.
     // MOVE_None / MOVE_Walking / MOVE_Falling 등의 숫자 값이다.
     // Net 모듈 공개 헤더가 CharacterMovementComponent.h에 의존하지 않도록
@@ -52,8 +63,8 @@ struct AIREPLICATIONNET_API FSharpMoveSnapshot
     UPROPERTY()
     uint8 MovementMode = 0;
 
-    // 향후 시각 예측 모델을 구분할 메타데이터.
-    // EventOnly는 None. EventPredictor도 서버 전송 규칙은 동일해야 한다.
+    // Client visual prediction model; basic CMC replication remains authoritative.
+    // Both event modes use identical server transmission rules.
     UPROPERTY()
     ESharpPredictionType PredictionType = ESharpPredictionType::None;
 };
