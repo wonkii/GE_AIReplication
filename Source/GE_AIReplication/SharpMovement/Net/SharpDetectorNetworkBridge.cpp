@@ -4,14 +4,13 @@
 #include "SharpMovement/Net/SharpDetectorNetworkBridge.h"
 
 #include "SharpMovement/Enemy/SharpEnemyCharacter.h"
-#include "SharpMovement/Experiment/SharpExperimentManager.h"
+#include "SharpMovement/Experiment/SharpEnemyExperimentComponent.h"
 #include "SharpMovement/Experiment/SharpExperimentTypes.h"
 #include "SharpMovement/Net/SharpUpdatePolicy.h"
 #include "SharpMoveSnapshot.h"
 
 #include "Engine/World.h"
 #include "GameFramework/CharacterMovementComponent.h"
-#include "Kismet/GameplayStatics.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogSharpDetectorNetworkBridge, Log, All);
 
@@ -42,10 +41,9 @@ namespace
         {
             return TEXT("InvalidMovementMode");
         }
-        // EventPredictor도 이 단계에서는 EventOnly와 똑같은 None 메타데이터를 보낸다.
-        if (Event.PredictionType != ESharpPredictionType::None)
+        if (Event.Gravity.ContainsNaN() || static_cast<uint8>(Event.PredictionType) > static_cast<uint8>(ESharpPredictionType::Airborne))
         {
-            return TEXT("PredictionTypeNotNone");
+            return TEXT("InvalidPredictionPayload");
         }
         return nullptr;
     }
@@ -61,6 +59,16 @@ ESharpDetectorNetworkDispatchResult FSharpDetectorNetworkBridge::DispatchDetecte
             TEXT("[M5][DetectorBridge] Rejected Reason=MissingEnemyOrNotAuthority"));
         return ESharpDetectorNetworkDispatchResult::Rejected;
     }
+	const FSharpEnemyTrialStatus& Status = Enemy->Experiment->Status;
+	FString BindingReason;
+	if (!Enemy->Experiment->IsObservingMovement() || !Enemy->Experiment->ValidateBinding(BindingReason) ||
+		ObservedEvent.Generation != Status.Generation || ObservedEvent.Segment != Status.Segment ||
+		ObservedEvent.ServerTime < Status.SegmentStartTime ||
+		ObservedEvent.ServerTime > Enemy->GetWorld()->GetTimeSeconds() + KINDA_SMALL_NUMBER)
+	{
+		UE_LOG(LogSharpDetectorNetworkBridge, Warning, TEXT("[M5][DetectorBridge] Rejected ActorId=%d Reason=InactiveOrStaleExecution"), Enemy->ExperimentActorId);
+		return ESharpDetectorNetworkDispatchResult::Rejected;
+	}
 
     USharpUpdatePolicy* Policy = Enemy->FindComponentByClass<USharpUpdatePolicy>();
     if (!IsValid(Policy) || !Policy->IsPolicyInitialized())
@@ -123,23 +131,19 @@ ESharpDetectorNetworkDispatchResult FSharpDetectorNetworkBridge::DispatchDetecte
         return ESharpDetectorNetworkDispatchResult::Rejected;
     }
 
-    const ASharpExperimentManager* Manager = Cast<ASharpExperimentManager>(
-        UGameplayStatics::GetActorOfClass(World, ASharpExperimentManager::StaticClass()));
-    const FSharpExperimentIdentity* Identity =
-        Manager ? Manager->GetResolvedIdentity() : nullptr;
-    const FString RunId = Identity ? Identity->RunId : TEXT("Unknown");
-    const int32 TrialId = Identity ? Identity->TrialId : -1;
+    const FString& RunId = Status.Identity.RunId;
+    const int32 TrialId = Status.Identity.TrialId;
     const FString ModeName = StaticEnum<ESharpExperimentMode>()
         ->GetNameStringByValue(static_cast<int64>(Mode));
 
     UE_LOG(LogSharpDetectorNetworkBridge, Display,
         TEXT("[M5][DetectorBridge] RunId=%s TrialId=%d ActorId=%d Mode=%s "
             "SequenceId=%u EventServerTime=%.6f RouteWorldTime=%.6f "
-            "Requested=%d Action=%s"),
+            "Requested=%d Action=%s Generation=%d Segment=%d"),
         *RunId, TrialId, Enemy->ExperimentActorId, *ModeName,
         ObservedEvent.SequenceId, ObservedEvent.ServerTime,
         World->GetTimeSeconds(), bRequested ? 1 : 0,
-        bRequested ? TEXT("PolicyOrSnapshotRequest") : TEXT("RejectedByPolicy"));
+        bRequested ? TEXT("PolicyOrSnapshotRequest") : TEXT("RejectedByPolicy"), Status.Generation, Status.Segment);
 
     return bRequested
         ? ESharpDetectorNetworkDispatchResult::Requested

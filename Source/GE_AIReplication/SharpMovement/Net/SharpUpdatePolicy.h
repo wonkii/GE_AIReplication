@@ -18,6 +18,8 @@ class GE_AIREPLICATION_API USharpUpdatePolicy : public UActorComponent
     GENERATED_BODY()
 
 public:
+	// Read-only preflight used before any member of a group starts.
+	bool ValidateConfiguration(ESharpExperimentMode InMode, const USharpExperimentSettings* InSettings, FString& OutReason) const;
     // 서버 Policy 초기화 및 원래 업데이트 빈도 복원.
     bool InitializePolicy(
         ESharpExperimentMode InMode,
@@ -84,10 +86,8 @@ private:
     UPROPERTY(Transient)
     uint32 LastHandledSequenceId = 0;
 
-    // Burst 지속 시간. 임시 실험 파라미터이며 초기화 로그에 기록한다.
-    // 실제 연구 비교 전에는 설정값/비교 조건을 명시적으로 고정해야 한다.
-    UPROPERTY(EditDefaultsOnly, Category = "Sharp Experiment|Network",
-        meta = (ClampMin = "0.01"))
+    // Cached from the prepared settings asset; there is one editable source.
+    UPROPERTY(Transient)
     float BurstDurationSeconds = 0.25f;
 
     // 서버 타이머가 만료되면 Burst 진입 전 Actor의 Frequency로 복원한다.

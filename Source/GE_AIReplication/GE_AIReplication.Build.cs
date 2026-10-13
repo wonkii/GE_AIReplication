@@ -18,13 +18,20 @@ public class GE_AIReplication : ModuleRules
 			"StateTreeModule",
 			"GameplayStateTreeModule",
 			"UMG",
-			"Slate"
-		});
-
-		PrivateDependencyModuleNames.AddRange(new string[] {
+			"Slate",
 			"AIReplicationCore",
 			"AIReplicationNet"
 		});
+
+		PrivateDependencyModuleNames.AddRange(new string[] {
+			"Json",
+			"JsonUtilities"
+		});
+
+		if (Target.bBuildEditor)
+		{
+			PrivateDependencyModuleNames.Add("UnrealEd"); // Editor placement transactions only.
+		}
 
 		PublicIncludePaths.AddRange(new string[] {
 			"GE_AIReplication",

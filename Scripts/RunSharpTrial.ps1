@@ -7,7 +7,7 @@
     - 네트워크 조건은 Unreal Network Emulation 커맨드라인 인자로 클라이언트에만 적용한다 (서버 기록은 영향 없음).
     - 실행마다 결과 폴더에 run_meta.json(실행 조건)과 서버·클라이언트 로그를 남기고,
       로그의 RunId/TrialId/Mode가 서버·클라이언트에서 일치하는지 검사한다.
-    - Recorder에는 -SharpOutDir, -SharpClientId를 넘긴다. Recorder는 CSV를 이 폴더에 써야 한다 (Scripts/Analysis/README.md).
+    - Recorder에는 -SharpOutDir, -SharpClientId를 넘긴다. Native Recorder는 이 폴더의 Native 아래 Enemy·실행·역할별 CSV를 쓴다.
     - Enemy(PR #3)가 있으면 서버에서 모드별 전송 정책이 적용됐는지, 클라이언트에 Enemy가 복제됐는지도 검사한다.
     - Adaptive 모드에서만 서버의 net.UseAdaptiveNetUpdateFrequency를 1로, 나머지 모드에서는 0으로 넘긴다.
     - -NetTrace를 쓰면 Tools/summarize_network_cost.py 입력 양식에 실행 조건을 미리 채운 CSV를 결과 폴더에 만든다.
@@ -54,6 +54,8 @@ param(
     [int]$ConnectWaitSec = 10,
     [int]$WarmupSec = 5,
     [int]$MeasureSec = 60,
+    [ValidateRange(1, 60)]
+    [int]$RecordingTailWaitSec = 2,
     [int]$ShutdownTimeoutSec = 15,
     [int]$ClientMaxFps = 60,
 
@@ -112,7 +114,7 @@ function Join-Args([string[]]$Items) {
 function Start-Unreal([string]$ArgLine, [string]$Label) {
     Write-Host "  [$Label] `"$Editor`" $ArgLine"
     if ($DryRun) { return $null }
-    return Start-Process -FilePath $Editor -ArgumentList $ArgLine -PassThru
+    return Start-Process -FilePath $Editor -ArgumentList $ArgLine -WindowStyle Hidden -PassThru
 }
 
 function Stop-Unreal($Proc, [string]$Label) {
@@ -175,10 +177,11 @@ function Add-NetworkCostRows([string]$Path, $Meta, [int]$ActorCount) {
         [IO.File]::AppendAllText($Path, $header + "`r`n", $utf8)
     }
     $inv = [Globalization.CultureInfo]::InvariantCulture
+    $eventSource = if ($Meta.Mode -in @('SingleShot', 'Burst', 'EventOnly', 'EventPredictor')) { 'RealDetector' } else { 'None' }
     foreach ($id in $Meta.Clients.Keys) {
         $c = $Meta.Clients[$id]
         $loss = [string]::Format($inv, '{0}', $c.LossPct)
-        $line = "$($Meta.RunId),$($Meta.TrialId),$($Meta.Mode),$ActorCount,Client$id-$($c.Profile),None,$($c.LagMs),$loss,,,,,,,,T$($Meta.TrialId)\server.utrace"
+        $line = "$($Meta.RunId),$($Meta.TrialId),$($Meta.Mode),$ActorCount,Client$id-$($c.Profile),$eventSource,$($c.LagMs),$loss,,,,,,,,T$($Meta.TrialId)\server.utrace"
         [IO.File]::AppendAllText($Path, $line + "`r`n", $utf8)
     }
 }
@@ -215,6 +218,7 @@ foreach ($m in $Mode) {
         $serverArgs = @(
             $Project, $Map, '-server', '-game', '-log', '-unattended', "-port=$Port",
             "-SharpRunId=$runId", "-SharpTrialId=$trial", "-SharpMode=$m",
+            '-SharpAutoStart=1', '-SharpAutoRepeat=0', "-SharpExpectedClients=$($ClientProfiles.Count)", "-SharpStartDelay=$WarmupSec", "-SharpDurationSec=$MeasureSec",
             "-SharpOutDir=$outDir", "-abslog=$serverLog"
         )
         # Adaptive는 엔진 전역 설정이 켜져 있어야 동작하고, 다른 모드는 꺼져 있어야 결과가 섞이지 않는다
@@ -270,11 +274,19 @@ foreach ($m in $Mode) {
                 for ($i = 0; $i -lt $clientLines.Count; $i++) {
                     $clientProcs += , (Start-Unreal $clientLines[$i] "Client$($i + 1)")
                 }
-                $total = $ConnectWaitSec + $WarmupSec + $MeasureSec
-                Write-Host "  접속 대기 $ConnectWaitSec s + 워밍업 $WarmupSec s + 측정 $MeasureSec s = $total s"
+                Write-Host "  연결 완료 및 서버의 전체 시작을 기다린 후 $MeasureSec s 측정"
                 if (-not $DryRun) {
                     $meta.ClientsStartedAt = (Get-Date).ToString('o')
-                    Start-Sleep -Seconds $total
+                    $startTimeout = $ConnectWaitSec + $WarmupSec + $ServerReadyTimeoutSec
+                    if (-not (Wait-LogLine $serverLog '\[Sharp\]\[Group\] Started' $startTimeout $server)) {
+                        $issues += "서버가 $startTimeout 초 안에 모든 Enemy를 시작하지 못함 (Paths/AssignedEnemy/Policy 확인)"
+                    }
+                    else {
+                        $meta.MeasurementStartedAt = (Get-Date).ToString('o')
+                        Start-Sleep -Seconds $MeasureSec
+                        # Let the server publish Completed and both roles flush the observation tail.
+                        Start-Sleep -Seconds $RecordingTailWaitSec
+                    }
                     $meta.EndedAt = (Get-Date).ToString('o')
                 }
             }
@@ -330,14 +342,30 @@ foreach ($m in $Mode) {
             }
             $meta.ClientEnemyCounts = $clientEnemies
 
-            # Recorder 구현 전에는 CSV가 없을 수 있으므로 경고만 남긴다
+            # Native Recorder writes independent Enemy/session/process directories.
             $csvMissing = @()
-            if (-not (Test-Path (Join-Path $outDir 'server_samples.csv'))) { $csvMissing += 'server_samples.csv' }
+            $nativeRoot = Join-Path $outDir 'Native'
+            $serverCsv = @(Get-ChildItem -LiteralPath $nativeRoot -Filter 'server_samples.csv' -Recurse -ErrorAction SilentlyContinue)
+            if ($serverCsv.Count -eq 0 -and -not (Test-Path (Join-Path $outDir 'server_samples.csv'))) { $csvMissing += 'server_samples.csv' }
+            if ($serverCsv.Count -gt 0 -and $serverCsv.Count -lt $binds.Count) { $issues += "서버 기록이 Enemy $($serverCsv.Count) / $($binds.Count) 개만 생성됨" }
             for ($i = 1; $i -le $ClientProfiles.Count; $i++) {
-                if (-not (Test-Path (Join-Path $outDir "client_$($i)_samples.csv"))) { $csvMissing += "client_$($i)_samples.csv" }
+                $clientCsv = @(Get-ChildItem -LiteralPath $nativeRoot -Filter "client_$($i)_samples.csv" -Recurse -ErrorAction SilentlyContinue)
+                if ($clientCsv.Count -eq 0 -and -not (Test-Path (Join-Path $outDir "client_$($i)_samples.csv"))) { $csvMissing += "client_$($i)_samples.csv" }
+                if ($clientCsv.Count -gt 0 -and $clientCsv.Count -lt $binds.Count) { $issues += "클라이언트 $i 기록이 Enemy $($clientCsv.Count) / $($binds.Count) 개만 생성됨" }
             }
-            if ($csvMissing.Count -gt 0) { Write-Warning "CSV 없음: $($csvMissing -join ', ')" }
+            if ($csvMissing.Count -gt 0) { $issues += "CSV 없음: $($csvMissing -join ', ')" }
             $meta.MissingCsv = $csvMissing
+            $manifests = @(Get-ChildItem -LiteralPath $nativeRoot -Filter 'manifest.json' -Recurse -ErrorAction SilentlyContinue)
+            $meta.NativeManifestCount = $manifests.Count
+            if ($serverCsv.Count -gt 0 -and $manifests.Count -lt ($binds.Count * (1 + $ClientProfiles.Count))) {
+                $issues += '일부 Enemy 또는 클라이언트의 manifest.json 없음'
+            }
+            foreach ($manifest in $manifests) {
+                $recording = Get-Content -LiteralPath $manifest.FullName -Raw | ConvertFrom-Json
+                if (-not $recording.Healthy -or $recording.State -notmatch 'Completed$' -or $recording.Outcome -notmatch 'Completed$') {
+                    $issues += "완료되지 않았거나 저장 오류가 있는 기록: $($manifest.FullName) ($($recording.State)/$($recording.Outcome))"
+                }
+            }
         }
 
         $meta.Issues = $issues
@@ -362,4 +390,4 @@ $results | Format-Table -AutoSize | Out-String -Width 200 | Write-Host
 $analysis = Join-Path $PSScriptRoot 'Analysis\sharp_metrics.py'
 $convert = Join-Path $PSScriptRoot 'Analysis\convert_logs.py'
 Write-Host "Recorder가 없을 때 (로그 변환): python `"$convert`" `"$BatchDir`""
-Write-Host "분석: python `"$analysis`" `"$BatchDir`""
+Write-Host "Native 기록 분석: python `"$analysis`" `"$BatchDir`" --native --clock wall"

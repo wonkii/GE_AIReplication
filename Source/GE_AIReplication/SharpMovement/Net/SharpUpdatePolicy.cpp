@@ -9,145 +9,47 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogSharpUpdatePolicy, Log, All);
 
+bool USharpUpdatePolicy::ValidateConfiguration(ESharpExperimentMode InMode,
+    const USharpExperimentSettings* InSettings, FString& OutReason) const
+{
+    const AActor* OwnerActor = GetOwner();
+    if (!IsValid(OwnerActor) || !OwnerActor->HasAuthority())
+    { OutReason = TEXT("MissingOwnerOrNotAuthority"); return false; }
+    if (!StaticEnum<ESharpExperimentMode>()->IsValidEnumValue(static_cast<int64>(InMode)))
+    { OutReason = TEXT("ModeNotImplemented"); return false; }
+    if (!InSettings && InMode != ESharpExperimentMode::Default)
+    { OutReason = TEXT("SettingsMissing"); return false; }
+    if (InSettings && !InSettings->IsValidConfiguration(OutReason)) { return false; }
+    if (InMode == ESharpExperimentMode::Adaptive && !UNetDriver::IsAdaptiveNetUpdateFrequencyEnabled())
+    { OutReason = TEXT("AdaptiveGlobalDisabled"); return false; }
+    const float BaselineHz = InSettings && InSettings->bUseControlledLowRate
+        ? (InMode == ESharpExperimentMode::Adaptive ? InSettings->HighNetUpdateFrequency : InSettings->NormalNetUpdateFrequency)
+        : (bHasSavedNetUpdateFrequency ? SavedNetUpdateFrequencyHz : OwnerActor->GetNetUpdateFrequency());
+    if (InMode == ESharpExperimentMode::Adaptive && InSettings->NormalNetUpdateFrequency > BaselineHz)
+    { OutReason = TEXT("AdaptiveMinExceedsMax"); return false; }
+    if (InMode == ESharpExperimentMode::Burst)
+    {
+        if (InSettings->HighNetUpdateFrequency <= BaselineHz)
+        { OutReason = TEXT("BurstHighNotAboveBaseline"); return false; }
+        if (!FMath::IsFinite(InSettings->BurstSeconds) || InSettings->BurstSeconds <= 0)
+        { OutReason = TEXT("InvalidBurstDuration"); return false; }
+    }
+    OutReason.Empty(); return true;
+}
+
 bool USharpUpdatePolicy::InitializePolicy(
     ESharpExperimentMode InMode,
     USharpExperimentSettings* InSettings)
 {
+    FString Reason;
+    if (!ValidateConfiguration(InMode, InSettings, Reason))
+    {
+        UE_LOG(LogSharpUpdatePolicy, Error, TEXT("[M5][Policy] InitRejected Reason=%s Actor=%s"),
+            *Reason, *GetNameSafe(GetOwner()));
+        return false;
+    }
     AActor* OwnerActor = GetOwner();
-
-    if (!IsValid(OwnerActor))
-    {
-        UE_LOG(LogSharpUpdatePolicy, Error,
-            TEXT("[M5][Policy] InitRejected Reason=MissingOwner"));
-        return false;
-    }
-
-    // Policy는 서버에서만 적용한다.
-    if (!OwnerActor->HasAuthority())
-    {
-        UE_LOG(LogSharpUpdatePolicy, Warning,
-            TEXT("[M5][Policy] InitRejected Reason=NotAuthority Actor=%s"),
-            *GetNameSafe(OwnerActor));
-        return false;
-    }
-
-    // 실제로 구현된 모드만 허용한다.
-    if (InMode != ESharpExperimentMode::Default &&
-        InMode != ESharpExperimentMode::Adaptive &&
-        InMode != ESharpExperimentMode::AlwaysHigh &&
-        InMode != ESharpExperimentMode::SingleShot &&
-        InMode != ESharpExperimentMode::Burst &&
-        InMode != ESharpExperimentMode::EventOnly &&
-        InMode != ESharpExperimentMode::EventPredictor)
-    {
-        const FString RequestedMode =
-            StaticEnum<ESharpExperimentMode>()->GetNameStringByValue(
-                static_cast<int64>(InMode));
-
-        UE_LOG(LogSharpUpdatePolicy, Warning,
-            TEXT("[M5][Policy] InitRejected Reason=ModeNotImplemented "
-                "Actor=%s Mode=%s"),
-            *GetNameSafe(OwnerActor),
-            *RequestedMode);
-        return false;
-    }
-
-    // Default는 Settings가 없어도 엔진의 기존 상태를 유지한다.
-    // Adaptive, AlwaysHigh, SingleShot, Burst, EventOnly, EventPredictor는 Settings가 필요하다.
-    if (!InSettings && InMode != ESharpExperimentMode::Default)
-    {
-        const FString ModeName =
-            StaticEnum<ESharpExperimentMode>()->GetNameStringByValue(
-                static_cast<int64>(InMode));
-
-        UE_LOG(LogSharpUpdatePolicy, Error,
-            TEXT("[M5][Policy] InitRejected Reason=SettingsMissing "
-                "Actor=%s Mode=%s"),
-            *GetNameSafe(OwnerActor),
-            *ModeName);
-        return false;
-    }
-
-    // Adaptive는 Unreal 내장 기능을 사용한다.
-    // CVar는 PIE 프로세스 전체에 영향을 주므로 여기서 변경하지 않는다.
-    const bool bAdaptiveGlobalEnabled =
-        UNetDriver::IsAdaptiveNetUpdateFrequencyEnabled();
-
-    if (InMode == ESharpExperimentMode::Adaptive &&
-        !bAdaptiveGlobalEnabled)
-    {
-        UE_LOG(LogSharpUpdatePolicy, Error,
-            TEXT("[M5][Policy] InitRejected Reason=AdaptiveGlobalDisabled "
-                "Actor=%s RequiredCVar=net.UseAdaptiveNetUpdateFrequency=1"),
-            *GetNameSafe(OwnerActor));
-        return false;
-    }
-
-    // Adaptive의 최소 빈도는 해당 Actor의 최대 빈도를 넘을 수 없다.
-    // 최대 NetUpdateFrequency 자체는 기존 설정을 보존한다.
-    if (InMode == ESharpExperimentMode::Adaptive &&
-        InSettings->NormalNetUpdateFrequency > OwnerActor->GetNetUpdateFrequency())
-    {
-        UE_LOG(LogSharpUpdatePolicy, Error,
-            TEXT("[M5][Policy] InitRejected Reason=AdaptiveMinExceedsMax "
-                "Actor=%s RequestedMinHz=%.1f ActorMaxHz=%.1f"),
-            *GetNameSafe(OwnerActor),
-            InSettings->NormalNetUpdateFrequency,
-            OwnerActor->GetNetUpdateFrequency());
-        return false;
-    }
-
-    // Burst는 High 값이 실제 기준 빈도보다 높은 경우에만 유효하다.
-    // 현재 BP 기본값 100Hz와 Settings High 60Hz 조합은 역효과이므로 거부한다.
-    // Policy가 평상시 빈도를 몰래 10Hz로 변경하지 않도록 한다.
-    if (InMode == ESharpExperimentMode::Burst)
-    {
-        const float BaselineHz = OwnerActor->GetNetUpdateFrequency();
-        const float HighHz = InSettings->HighNetUpdateFrequency;
-        if (HighHz <= BaselineHz)
-        {
-            UE_LOG(LogSharpUpdatePolicy, Error,
-                TEXT("[M5][Policy] InitRejected Reason=BurstHighNotAboveBaseline "
-                    "Actor=%s BaselineHz=%.1f ConfiguredHighHz=%.1f "
-                    "Action=NoChange"),
-                *GetNameSafe(OwnerActor),
-                BaselineHz,
-                HighHz);
-            return false;
-        }
-
-        if (!FMath::IsFinite(BurstDurationSeconds) ||
-            BurstDurationSeconds <= 0.0f)
-        {
-            UE_LOG(LogSharpUpdatePolicy, Error,
-                TEXT("[M5][Policy] InitRejected Reason=InvalidBurstDuration "
-                    "Actor=%s DurationSeconds=%.3f"),
-                *GetNameSafe(OwnerActor),
-                BurstDurationSeconds);
-            return false;
-        }
-    }
-
-    if (InSettings)
-    {
-        FString InvalidReason;
-        if (!InSettings->IsValidConfiguration(InvalidReason))
-        {
-            UE_LOG(LogSharpUpdatePolicy, Error,
-                TEXT("[M5][Policy] InitRejected Reason=InvalidSettings "
-                    "Actor=%s Details=%s"),
-                *GetNameSafe(OwnerActor),
-                *InvalidReason);
-            return false;
-        }
-    }
-    else
-    {
-        UE_LOG(LogSharpUpdatePolicy, Warning,
-            TEXT("[M5][Policy] SettingsMissing Actor=%s "
-                "Mode=Default (no replication settings will change)"),
-            *GetNameSafe(OwnerActor));
-    }
+    const bool bAdaptiveGlobalEnabled = UNetDriver::IsAdaptiveNetUpdateFrequencyEnabled();
 
     // 재초기화라면 현재 모드가 바꾼 값을 먼저 원상복구한다.
     if (bPolicyInitialized)
@@ -157,6 +59,7 @@ bool USharpUpdatePolicy::InitializePolicy(
 
     ActiveMode = InMode;
     CachedSettings = InSettings;
+	if (InSettings) { BurstDurationSeconds = InSettings->BurstSeconds; }
     bPolicyInitialized = true;
     SavedNetUpdateFrequencyHz = 0.0f;
     bHasSavedNetUpdateFrequency = false;
@@ -241,7 +144,7 @@ bool USharpUpdatePolicy::InitializePolicy(
 
     // EventOnly / EventPredictor: 서버의 동일한 Snapshot 게시 경로를 사용한다.
     // 이 시점에는 NetUpdateFrequency나 CMC를 변경하지 않는다.
-    // EventPredictor의 실제 클라이언트 Mesh 예측은 구현하지 않는다.
+    // Mesh prediction belongs to the simulated-proxy presentation component.
     if (InMode == ESharpExperimentMode::EventOnly ||
         InMode == ESharpExperimentMode::EventPredictor)
     {
@@ -312,6 +215,8 @@ bool USharpUpdatePolicy::InitializePolicy(
     bHasSavedNetUpdateFrequency = true;
 
     OwnerActor->SetNetUpdateFrequency(RequestedHighHz);
+	SavedMinNetUpdateFrequencyHz = OwnerActor->GetMinNetUpdateFrequency(); bHasSavedMinNetUpdateFrequency = true;
+	OwnerActor->SetMinNetUpdateFrequency(RequestedHighHz);
 
     const float AppliedFrequencyHz = OwnerActor->GetNetUpdateFrequency();
     const TCHAR* RelativeToPrevious =
@@ -425,6 +330,8 @@ bool USharpUpdatePolicy::HandleSharpMovementEvent(
         SavedNetUpdateFrequencyHz = BaselineHz;
         bHasSavedNetUpdateFrequency = true;
         OwnerActor->SetNetUpdateFrequency(HighHz);
+		SavedMinNetUpdateFrequencyHz = OwnerActor->GetMinNetUpdateFrequency(); bHasSavedMinNetUpdateFrequency = true;
+		OwnerActor->SetMinNetUpdateFrequency(HighHz);
         bBurstActive = true;
     }
 
@@ -468,6 +375,8 @@ void USharpUpdatePolicy::FinishBurst()
     const float BeforeRestoreHz = OwnerActor->GetNetUpdateFrequency();
     const float OriginalHz = SavedNetUpdateFrequencyHz;
     OwnerActor->SetNetUpdateFrequency(OriginalHz);
+	if (bHasSavedMinNetUpdateFrequency) { OwnerActor->SetMinNetUpdateFrequency(SavedMinNetUpdateFrequencyHz); }
+	bHasSavedMinNetUpdateFrequency = false; SavedMinNetUpdateFrequencyHz = 0;
 
     bBurstActive = false;
     bHasSavedNetUpdateFrequency = false;

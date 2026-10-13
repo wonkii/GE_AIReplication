@@ -1,8 +1,8 @@
 # M1. 서버 권한 Enemy AI와 기본 이동 복제
 
-> 상태: 개발 예정. [전체 아키텍처](../Architecture/Unreal_Sharp_Movement_마일스톤_구현계획.md) · 선행: [M0](../M0/M0_실험_설정.md) · 다음: [M2](../M2/M2_Impulse_재현.md)
+> 상태: 다중 Enemy Spline 코드 구현. 실제 이동은 수동 확인 필요. [설정 가이드](M1_MultiEnemy_Spline_설정.md) · [파일 책임](../Architecture/SharpMovement_책임분리.md) · 선행: [M0](../M0/M0_실험_설정.md) · 다음: [M2](../M2/M2_Impulse_재현.md)
 
-기존 `Variant_Combat/AI/CombatEnemy.*`는 참고 코드다. 전용 Enemy의 서버·클라이언트 실행은 아직 검증되지 않았다.
+기존 `Variant_Combat/AI/CombatEnemy.*`는 참고 코드다. 현재 전용 Enemy는 각자의 Spline을 서버 CMC 입력으로 추종하며 개별/전체 제어를 지원한다. 아래 내용은 원래 M1 목표이며 실제 설정은 위 가이드를 따른다. 서버·클라이언트 이동의 실행 검증은 별도로 필요하다.
 
 ## 담당 파일과 폴더
 
@@ -11,7 +11,9 @@
 | 경로 | 역할 |
 |---|---|
 | `Source/GE_AIReplication/SharpMovement/Enemy/SharpEnemyCharacter.h/.cpp` | 서버 권한 ACharacter, CMC, 이동 복제 |
-| `Source/GE_AIReplication/SharpMovement/Enemy/SharpEnemyAIController.h/.cpp` | 서버 AI 이동 명령 |
+| `Source/GE_AIReplication/SharpMovement/Enemy/SharpEnemyAIController.h/.cpp` | 서버 AI Possession과 소유 해제 |
+| `Source/GE_AIReplication/SharpMovement/Movement/SharpSplineFollowerComponent.h/.cpp` | Enemy별 서버 이동 입력 |
+| `Source/GE_AIReplication/SharpMovement/Experiment/SharpEnemyExperimentComponent.h/.cpp` | 개별 실행 상태와 정책 수명 |
 | `Content/SharpMovementExperiment/Blueprints/BP_SharpEnemy.uasset` | 전용 Enemy 배치와 표시 설정 |
 
 ## 개발 및 검증 사항

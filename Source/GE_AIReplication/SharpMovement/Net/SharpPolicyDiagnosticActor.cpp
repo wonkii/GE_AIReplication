@@ -4,6 +4,7 @@
 #include "SharpMovement/Net/SharpPolicyDiagnosticActor.h"
 #include "SharpMovement/Net/SharpUpdatePolicy.h"
 #include "SharpMovement/Enemy/SharpEnemyCharacter.h"
+#include "SharpMovement/Experiment/SharpEnemyExperimentComponent.h"
 #include "SharpMoveSnapshot.h"
 
 #include "GameFramework/CharacterMovementComponent.h"
@@ -23,6 +24,8 @@ namespace
     {
         FSharpMoveSnapshot Snapshot;
         Snapshot.SequenceId = SequenceId;
+		Snapshot.Generation = Enemy.Experiment->Status.Generation;
+		Snapshot.Segment = Enemy.Experiment->Status.Segment;
         Snapshot.ServerTime = World.GetTimeSeconds();
         Snapshot.StartPosition = Enemy.GetActorLocation();
         Snapshot.PostVelocity = Enemy.GetVelocity();
@@ -70,7 +73,7 @@ void ASharpPolicyDiagnosticActor::BeginPlay()
             "NotARealSharpMovementEvent=1"),
         TargetActorId);
 
-    // Enemy의 서버 Tick에서 Policy 초기화가 끝날 때까지 잠시 대기한다.
+    // Wait for the manually/explicitly started Enemy session to initialize Policy.
     GetWorldTimerManager().SetTimer(
         FindPolicyTimerHandle,
         this,
