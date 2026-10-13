@@ -1,6 +1,16 @@
 # 실험 실행·분석 스크립트
 
-> 상태: 임시안. 관련 단계: M3(Metrics), M4(탐지 평가), M7·M8(네트워크 조건, 반복 실행, 모드 비교) · 작성: 염형주
+> native Recorder가 기존 분석 CSV 양식에 연결되어 있다. 아래 로그 변환 안내는 기존 저빈도 기록 분석에도 사용할 수 있다.
+
+현재 다중 Enemy 구현의 설정·기록·반복·보고서 안내는 [실험 기능 안내](../../docs/Architecture/SharpMovement_실험기능.md)를 참고한다.
+
+```powershell
+python Scripts/Analysis/sharp_metrics.py Saved/SharpExperiments --native --clock wall
+```
+
+`--native`는 Enemy별 원본 기록을 `_collected`로 모은 뒤 분석한다. `report.html`과 `report.json`, 정밀 사건·Detector·예측 진단·연결 비용·조건 비교 결과를 함께 생성한다. 같은 PC에서는 wall, 별도 PC에서는 시계 동기화 상황을 고려해 server를 선택한다.
+
+다중 Spline 리팩터링 이후 이동 로그에 Generation/Segment/PathId/PathRevision/State를 추가한다. 로그 변환기는 이 열과 `control_events.csv`를 보존하며, 분석기는 RunId/TrialId/ActorId/Generation/Segment 실행 키 안에서만 보간한다. 결과의 ActorId는 기존 식별자를 유지하고 ExecutionKey에 실행 구간을 표시한다. Generation이 없는 기존 CSV는 기존 방식으로 처리한다. 상세 설정은 [다중 Enemy 가이드](../../docs/M1/M1_MultiEnemy_Spline_설정.md)를 참고한다.
 
 실험을 같은 조건으로 반복 실행하고, Recorder가 남긴 CSV에서 오차와 회복 시간 같은 지표를 계산하는 스크립트다. CSV 형식은 아직 Recorder가 없어서 임시로 정했고, Recorder 구현에 맞춰 고친다.
 
@@ -35,7 +45,7 @@ Python 3.8 이상이면 따로 설치할 패키지는 없다. PowerShell 스크�
 
 1. M0의 실행 인자(`-SharpRunId`, `-SharpTrialId`, `-SharpMode`)에 결과 폴더(`-SharpOutDir`)를 더해 서버를 실행한다.
 2. 서버 로그에 `LogSharpExperiment ... Role=Server`가 찍히면 클라이언트를 실행한다.
-3. 접속 대기, 워밍업, 측정 시간(기본 10초, 5초, 60초)만큼 기다린다.
+3. 서버에 `SharpAutoStart=1`, `SharpExpectedClients=N`, `SharpStartDelay=WarmupSec`를 전달한다. 서버는 대상 준비와 클라이언트 PlayerController 연결을 확인한 뒤 워밍업한다. 실행기는 `[Sharp][Group] Started` 로그를 기다린 후 측정 시간(기본 60초)을 센다. 시작하지 못하면 해당 실행을 무효로 기록한다.
 4. 클라이언트, 서버 순서로 창을 닫는다. 15초 안에 꺼지지 않으면 강제로 종료한다.
 5. 로그를 검사하고 결과를 `run_meta.json`의 `Valid`에 남긴다. 하나라도 걸리면 `Valid`는 False가 되고 이유가 `Issues`에 들어간다.
    - 서버와 클라이언트의 RunId, TrialId, Mode가 같은지

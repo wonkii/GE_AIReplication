@@ -33,6 +33,9 @@ SERVER_HEADER = ["RunId", "TrialId", "Mode", "ActorId", "ServerTime", "PosX", "P
                  "VelX", "VelY", "VelZ", "MovementMode", "LogReason"]
 CLIENT_HEADER = ["RunId", "TrialId", "Mode", "ClientId", "ActorId", "ServerTime",
                  "CapsuleX", "CapsuleY", "CapsuleZ", "MeshX", "MeshY", "MeshZ", "UpdateCount", "FrameMs"]
+CONTEXT_HEADER = ["Generation", "Segment", "PathId", "PathRevision", "State"]
+SERVER_HEADER += CONTEXT_HEADER
+CLIENT_HEADER += CONTEXT_HEADER
 
 
 def parse_vec(text: str) -> tuple[float, float, float] | None:
@@ -115,21 +118,35 @@ def convert_trial(trial: Path, force: bool, clock: str = "wall") -> str:
     def when(f):
         return f"{f['_Wall'] - wall0:.3f}" if wall0 is not None else f["ServerTime"]
 
+    def identity(f):
+        return [f.get("RunId", run_id), f.get("TrialId", trial_id), f.get("Mode", mode)]
+
+    def context(f):
+        return [f.get(k, "") for k in CONTEXT_HEADER]
+
+    def observable(f):
+        # Legacy logs have no State. New logs exclude administrative placement,
+        # stopped/suspended intervals and failed sessions from movement samples.
+        state = f.get("State", "").split("::")[-1]
+        return state in ("", "Running", "Completed") and float(f.get("ServerTime", "-1")) >= 0
+
     server_rows = []
     for f in iter_tagged(server_log, "[M2][CMC]"):
-        if "ServerTime" not in f or (wall0 is not None and "_Wall" not in f):
+        if "ServerTime" not in f or (wall0 is not None and "_Wall" not in f) or not observable(f):
             continue  # ObserverBound 같은 안내 줄
         pos, vel = parse_vec(f.get("PostPosition", "")), parse_vec(f.get("PostVelocity", ""))
         if pos is None or vel is None:
             continue
-        server_rows.append([run_id, trial_id, mode, actor_key(f), when(f),
-                            *map(fmt, pos), *map(fmt, vel), f.get("MovementMode", ""), f.get("Reason", "")])
+        server_rows.append([*identity(f), actor_key(f), when(f),
+                            *map(fmt, pos), *map(fmt, vel), f.get("MovementMode", ""), f.get("Reason", ""), *context(f)])
 
     client_counts, summaries = {}, []
     for log in sorted(trial.glob("client_*.log")):
         client_id = log.stem.split("_", 1)[1]
         raw = []
         for f in iter_tagged(log, "[M3][ClientVisual]"):
+            if not observable(f):
+                continue
             cap, mesh = parse_vec(f.get("CapsulePosition", "")), parse_vec(f.get("MeshPosition", ""))
             offset = parse_vec(f.get("CapsuleToMesh", ""))
             if cap is None or mesh is None or offset is None or "ServerTime" not in f:
@@ -140,7 +157,10 @@ def convert_trial(trial: Path, force: bool, clock: str = "wall") -> str:
                 frame_ms = f"{float(f.get('DeltaSeconds', '')) * 1000:.1f}"
             except ValueError:
                 frame_ms = ""
-            raw.append((actor_key(f), when(f), cap, mesh, offset, f.get("ReceiveCount", ""), frame_ms))
+            # Estimate the visual offset within each execution segment, never
+            # across reset/teleport or changes of path.
+            execution = (*identity(f), actor_key(f), f.get("Generation", ""), f.get("Segment", ""))
+            raw.append((execution, when(f), cap, mesh, offset, f.get("ReceiveCount", ""), frame_ms, context(f)))
         # 화면 위치 = Mesh 위치 - (Mesh의 평소 오프셋). 평소 오프셋은 실행 전체의 중앙값으로 추정한다.
         # smoothing 중에는 오프셋이 잠깐 바뀌므로, 그 차이가 곧 Capsule 대비 화면상 어긋남이다.
         base = {}
@@ -148,10 +168,10 @@ def convert_trial(trial: Path, force: bool, clock: str = "wall") -> str:
             offs = [r[4] for r in raw if r[0] == actor]
             base[actor] = tuple(statistics.median(o[i] for o in offs) for i in range(3))
         rows = []
-        for actor, t, cap, mesh, _offset, count, frame_ms in raw:
-            b = base[actor]
+        for execution, t, cap, mesh, _offset, count, frame_ms, ctx in raw:
+            b = base[execution]
             visual = (mesh[0] - b[0], mesh[1] - b[1], mesh[2] - b[2])
-            rows.append([run_id, trial_id, mode, client_id, actor, t, *map(fmt, cap), *map(fmt, visual), count, frame_ms])
+            rows.append([*execution[:3], client_id, execution[3], t, *map(fmt, cap), *map(fmt, visual), count, frame_ms, *ctx])
         write_csv(trial / f"client_{client_id}_samples.csv", CLIENT_HEADER, rows)
         client_counts[client_id] = len(rows)
 
@@ -159,6 +179,10 @@ def convert_trial(trial: Path, force: bool, clock: str = "wall") -> str:
             summaries.append({"ClientId": client_id, **{k: v for k, v in f.items() if k != "World"}})
 
     write_csv(trial / "server_samples.csv", SERVER_HEADER, server_rows)
+    control_header = ["RunId", "TrialId", "ActorId", "Generation", "Segment", "PathId", "PathRevision", "State", "ServerTime", "StartTime", "EndTime", "Reason"]
+    controls = list(iter_tagged(server_log, "[Sharp][Control]"))
+    if controls:
+        write_csv(trial / "control_events.csv", control_header, [[f.get(k, "") for k in control_header] for f in controls])
     if summaries:
         keys = list(dict.fromkeys(k for s in summaries for k in s))
         write_csv(trial / "baseline_summary.csv", keys, [[s.get(k, "") for k in keys] for s in summaries])

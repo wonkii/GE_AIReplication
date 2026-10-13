@@ -61,6 +61,8 @@ class ServerTrack:
     t: list[float] = field(default_factory=list)
     p: list[tuple[float, float, float]] = field(default_factory=list)
     v: list[tuple[float, float, float]] = field(default_factory=list)
+    maximum_gap: float = 0.6
+
 
     def speed_at(self, time: float) -> float | None:
         """time 직전 서버 샘플의 속력 (cm/s). 속도 기록이 없으면 None."""
@@ -78,6 +80,8 @@ class ServerTrack:
         if i < len(self.t) and self.t[i] == time:
             return self.p[i]
         t0, t1 = self.t[i - 1], self.t[i]
+        if t1 - t0 > self.maximum_gap:
+            return None
         a = (time - t0) / (t1 - t0) if t1 > t0 else 0.0
         p0, p1 = self.p[i - 1], self.p[i]
         return (p0[0] + (p1[0] - p0[0]) * a, p0[1] + (p1[1] - p0[1]) * a, p0[2] + (p1[2] - p0[2]) * a)
@@ -97,6 +101,8 @@ class ClientSeries:
     t_last: float = 0.0
     cap: list = field(default_factory=list)  # 클라이언트 Capsule 위치 (시간 어긋남 진단용)
     frame_ms: list = field(default_factory=list)  # 클라이언트 프레임 시간 (FrameMs 열이 있을 때만)
+    maximum_gap: float = 0.6
+    mesh: list = field(default_factory=list)
 
 
 @dataclass
@@ -113,13 +119,35 @@ class Trial:
     duration: float
 
 
-def build_server(rows: list[dict[str, str]]) -> dict[str, ServerTrack]:
+def execution_key(row: dict[str, str]) -> str:
+    """Keep interpolation and correction statistics within one execution segment.
+
+    CSVs without Generation retain their original ActorId keys.
+    """
+    actor = row.get("ActorId", "0")
+    if not row.get("Generation"):
+        return actor
+    return (f"{actor}@{row.get('RunId', '')}/T{row.get('TrialId', '')}"
+            f"/G{row['Generation']}/S{row.get('Segment', '0')}")
+
+
+def execution_identity(key: str, trial: Trial) -> dict:
+    """Expose the real identifiers even when one log contains multiple resets."""
+    if "@" not in key:
+        return {"RunId": trial.run_id, "TrialId": trial.trial_id, "ActorId": key, "ExecutionKey": key}
+    head, trial_part, generation, segment_id = key.rsplit("/", 3)
+    actor, run = head.split("@", 1)
+    return {"RunId": run, "TrialId": trial_part[1:], "ActorId": actor,
+            "Generation": generation[1:], "Segment": segment_id[1:], "ExecutionKey": key}
+
+
+def build_server(rows: list[dict[str, str]], maximum_gap=0.6) -> dict[str, ServerTrack]:
     tracks: dict[str, list[tuple[float, tuple]]] = {}
     for r in rows:
         t = fnum(r, "ServerTime")
         if t is None:
             continue
-        tracks.setdefault(r.get("ActorId", "0"), []).append((t, vec(r, "Pos"), vec(r, "Vel")))
+        tracks.setdefault(execution_key(r), []).append((t, vec(r, "Pos"), vec(r, "Vel")))
     out = {}
     for actor, samples in tracks.items():
         samples.sort(key=lambda s: s[0])
@@ -129,7 +157,7 @@ def build_server(rows: list[dict[str, str]]) -> dict[str, ServerTrack]:
                 dedup[-1] = s
             else:
                 dedup.append(s)
-        out[actor] = ServerTrack([s[0] for s in dedup], [s[1] for s in dedup], [s[2] for s in dedup])
+        out[actor] = ServerTrack([s[0] for s in dedup], [s[1] for s in dedup], [s[2] for s in dedup], maximum_gap)
     return out
 
 
@@ -137,7 +165,7 @@ def build_client(rows: list[dict[str, str]], server: dict[str, ServerTrack],
                  min_speed: float = 0.0) -> dict[str, ClientSeries]:
     per_actor: dict[str, list[dict[str, str]]] = {}
     for r in rows:
-        per_actor.setdefault(r.get("ActorId", "0"), []).append(r)
+        per_actor.setdefault(execution_key(r), []).append(r)
     out = {}
     for actor, samples in per_actor.items():
         track = server.get(actor)
@@ -145,13 +173,14 @@ def build_client(rows: list[dict[str, str]], server: dict[str, ServerTrack],
             continue
         samples.sort(key=lambda r: fnum(r, "ServerTime", 0.0))
         t, ec, em, corr, rec, rec_state = [], [], [], [], [], []
-        prev_mesh = prev_srv = prev_count = None
+        prev_mesh = prev_srv = prev_count = previous_time = None
         update_total, t_first, t_last = 0.0, None, None
-        caps, frames = [], []
+        caps, frames, meshes = [], [], []
         for r in samples:
             time = fnum(r, "ServerTime")
             srv = track.at(time) if time is not None else None
             if srv is None:
+                prev_mesh = prev_srv = previous_time = None
                 continue
             count = fnum(r, "UpdateCount")
             t_first = time if t_first is None else t_first
@@ -168,7 +197,10 @@ def build_client(rows: list[dict[str, str]], server: dict[str, ServerTrack],
                     prev_mesh = prev_srv = None  # 구간이 끊기면 보정 거리를 이어서 계산하지 않음
                     continue
             cap, mesh = vec(r, "Capsule"), vec(r, "Mesh")
+            if previous_time is not None and time - previous_time > track.maximum_gap:
+                prev_mesh = prev_srv = None
             caps.append(cap)
+            meshes.append(mesh)
             frame = fnum(r, "FrameMs")
             if frame is not None:
                 frames.append(frame)
@@ -179,9 +211,9 @@ def build_client(rows: list[dict[str, str]], server: dict[str, ServerTrack],
                 corr.append(0.0)
             else:
                 corr.append(dist(sub(mesh, prev_mesh), sub(srv, prev_srv)))
-            prev_mesh, prev_srv = mesh, srv
+            prev_mesh, prev_srv, previous_time = mesh, srv, time
         if t:
-            out[actor] = ClientSeries(t, ec, em, corr, rec, rec_state, update_total, t_first, t_last, caps, frames)
+            out[actor] = ClientSeries(t, ec, em, corr, rec, rec_state, update_total, t_first, t_last, caps, frames, track.maximum_gap, meshes)
     return out
 
 
@@ -193,12 +225,12 @@ def client_id_of(path: Path, rows: list[dict[str, str]]) -> str:
     return parts[1] if len(parts) >= 3 else stem
 
 
-def load_trial(path: Path, min_speed: float = 0.0) -> Trial:
+def load_trial(path: Path, min_speed: float = 0.0, maximum_gap=None) -> Trial:
     meta = {}
     if (path / META_FILE).exists():
         meta = json.loads((path / META_FILE).read_text(encoding="utf-8-sig"))
     server_rows = read_csv(path / SERVER_FILE)
-    server = build_server(server_rows)
+    server = build_server(server_rows, maximum_gap if maximum_gap is not None else (0.1 if meta.get("NativeRecorder") else 0.6))
     first = server_rows[0] if server_rows else {}
     clients = {}
     for cpath in sorted(path.glob(CLIENT_GLOB)):
@@ -247,23 +279,23 @@ def segment(series: ClientSeries, values: list[float], start: float, end: float)
     return series.t[i:j], values[i:j]
 
 
-def area(ts: list[float], vs: list[float]) -> float:
-    return sum((ts[k] - ts[k - 1]) * (vs[k] + vs[k - 1]) * 0.5 for k in range(1, len(ts)))
+def area(ts: list[float], vs: list[float], maximum_gap=0.6) -> float:
+    return sum((ts[k] - ts[k - 1]) * (vs[k] + vs[k - 1]) * 0.5 for k in range(1, len(ts)) if 0 < ts[k] - ts[k - 1] <= maximum_gap)
 
 
-def time_above(ts: list[float], vs: list[float], threshold: float) -> float:
+def time_above(ts: list[float], vs: list[float], threshold: float, maximum_gap=0.6) -> float:
     total = 0.0
     for k in range(1, len(ts)):
-        if vs[k - 1] > threshold:
+        if vs[k - 1] > threshold and 0 < ts[k] - ts[k - 1] <= maximum_gap:
             total += ts[k] - ts[k - 1]
     return total
 
 
-def time_mean(ts: list[float], vs: list[float]) -> float | None:
+def time_mean(ts: list[float], vs: list[float], maximum_gap=0.6) -> float | None:
     if not vs:
         return None
-    span = ts[-1] - ts[0] if len(ts) > 1 else 0.0
-    return area(ts, vs) / span if span > 0 else vs[0]
+    span = sum(b - a for a, b in zip(ts, ts[1:]) if 0 < b - a <= maximum_gap)
+    return area(ts, vs, maximum_gap) / span if span > 0 else vs[0]
 
 
 def percentile(values: list[float], q: float) -> float | None:
@@ -290,7 +322,7 @@ def first_arrival(series: ClientSeries, t0: float) -> tuple[float | None, bool]:
     return None, exact
 
 
-def recovery_time(ts, vs, t0, threshold, hold):
+def recovery_time(ts, vs, t0, threshold, hold, maximum_gap=0.6):
     """최대 오차 이후 오차가 threshold 미만으로 hold 초 이상 유지되기 시작한 시각 - t0."""
     if not vs:
         return None
@@ -303,6 +335,8 @@ def recovery_time(ts, vs, t0, threshold, hold):
             start = ts[k]
             m = k
             while m < len(vs) and vs[m] < threshold:
+                if m > k and ts[m] - ts[m - 1] > maximum_gap:
+                    start = ts[m]
                 if ts[m] - start >= hold:
                     return start - t0
                 m += 1
@@ -313,9 +347,11 @@ def recovery_time(ts, vs, t0, threshold, hold):
 
 
 def event_time(row: dict[str, str]) -> float | None:
+    if row.get("Status") and row["Status"] != "Observed":
+        return None
     for key in ("ActualVelocityChangeTime", "ImpulseCallTime", "VolumeOverlapTime"):
         value = fnum(row, key)
-        if value is not None:
+        if value is not None and value >= 0:
             return value
     return None
 
@@ -333,7 +369,7 @@ def event_metrics(trial: Trial, args) -> list[dict]:
     events = [e for e in trial.ground_truth if event_time(e) is not None]
     by_actor: dict[str, list[dict]] = {}
     for e in events:
-        by_actor.setdefault(e.get("ActorId", "0"), []).append(e)
+        by_actor.setdefault(execution_key(e), []).append(e)
     for actor_events in by_actor.values():
         actor_events.sort(key=event_time)
 
@@ -353,8 +389,8 @@ def event_metrics(trial: Trial, args) -> list[dict]:
                     continue
                 pre_ts, pre_cap = segment(series, series.err_cap, t0 - args.pre, t0)
                 _, pre_mesh = segment(series, series.err_mesh, t0 - args.pre, t0)
-                base_cap = time_mean(pre_ts, pre_cap) or 0.0
-                base_mesh = time_mean(pre_ts, pre_mesh) or 0.0
+                base_cap = time_mean(pre_ts, pre_cap, series.maximum_gap) or 0.0
+                base_mesh = time_mean(pre_ts, pre_mesh, series.maximum_gap) or 0.0
                 first, exact = first_arrival(series, t0)
                 if first is not None and first > end:
                     first = None
@@ -376,7 +412,7 @@ def event_metrics(trial: Trial, args) -> list[dict]:
                     "Mode": trial.mode,
                     "ClientId": client_id,
                     "NetProfile": net_profile(trial, client_id),
-                    "ActorId": actor,
+                    **execution_identity(actor, trial),
                     "EventId": e.get("EventId", str(idx)),
                     "Kind": e.get("Kind", ""),
                     "IsSharp": int(is_sharp(e)),
@@ -389,13 +425,13 @@ def event_metrics(trial: Trial, args) -> list[dict]:
                     "PreMeanErr": r(base_cap),
                     "CapPeak": r(cap[cap_peak_i]),
                     "CapPeakAt": r(ts[cap_peak_i] - t0, 4),
-                    "CapArea": r(area(ts, cap)),
-                    "CapTimeAbove": r(time_above(ts, cap, args.error_threshold), 4),
-                    "CapRecovery": r(recovery_time(ts, cap, t0, base_cap + args.recover_threshold, args.recover_hold), 4),
+                    "CapArea": r(area(ts, cap, series.maximum_gap)),
+                    "CapTimeAbove": r(time_above(ts, cap, args.error_threshold, series.maximum_gap), 4),
+                    "CapRecovery": r(recovery_time(ts, cap, t0, base_cap + args.recover_threshold, args.recover_hold, series.maximum_gap), 4),
                     "MeshPeak": r(max(mesh)),
-                    "MeshArea": r(area(ts, mesh)),
-                    "MeshTimeAbove": r(time_above(ts, mesh, args.error_threshold), 4),
-                    "MeshRecovery": r(recovery_time(ts, mesh, t0, base_mesh + args.recover_threshold, args.recover_hold), 4),
+                    "MeshArea": r(area(ts, mesh, series.maximum_gap)),
+                    "MeshTimeAbove": r(time_above(ts, mesh, args.error_threshold, series.maximum_gap), 4),
+                    "MeshRecovery": r(recovery_time(ts, mesh, t0, base_mesh + args.recover_threshold, args.recover_hold, series.maximum_gap), 4),
                     "CapPeakBeforeFirst": r(max(cap_b)) if cap_b else None,
                     "CapMeanBeforeFirst": r(time_mean(ts_b, cap_b)),
                     "CapPeakAfterFirst": r(max(cap_a)) if cap_a else None,
@@ -439,23 +475,33 @@ def trial_metrics(trial: Trial, args) -> list[dict]:
             span = s.t_last - s.t_first
             intervals = [b - a for a, b in zip(s.receipts, s.receipts[1:])]
             shift = best_time_shift(trial.server[actor], s) if s.cap else None
+            accelerations, previous_velocity = [], None
+            for index in range(1, len(s.t)):
+                dt = s.t[index] - s.t[index - 1]
+                if not 0 < dt <= s.maximum_gap:
+                    previous_velocity = None
+                    continue
+                velocity = tuple(value / dt for value in sub(s.mesh[index], s.mesh[index - 1]))
+                if previous_velocity is not None:
+                    accelerations.append(dist(velocity, previous_velocity) / dt)
+                previous_velocity = velocity
             rows.append({
                 "RunId": trial.run_id,
                 "TrialId": trial.trial_id,
                 "Mode": trial.mode,
                 "ClientId": client_id,
                 "NetProfile": net_profile(trial, client_id),
-                "ActorId": actor,
+                **execution_identity(actor, trial),
                 "DurationSec": r(span),
                 "Samples": len(s.t),
                 "Updates": int(s.update_total),
                 "UpdatesPerSec": r(s.update_total / span) if span > 0 else None,
                 "MeanUpdateInterval": r(statistics.fmean(intervals), 4) if intervals else None,
                 "MaxUpdateInterval": r(max(intervals), 4) if intervals else None,
-                "CapMean": r(time_mean(s.t, s.err_cap)),
+                "CapMean": r(time_mean(s.t, s.err_cap, s.maximum_gap)),
                 "CapP95": r(percentile(s.err_cap, 0.95)),
                 "CapMax": r(max(s.err_cap)),
-                "MeshMean": r(time_mean(s.t, s.err_mesh)),
+                "MeshMean": r(time_mean(s.t, s.err_mesh, s.maximum_gap)),
                 "MeshP95": r(percentile(s.err_mesh, 0.95)),
                 "MeshMax": r(max(s.err_mesh)),
                 "SnapCount": sum(1 for c in s.correction if c > args.snap_threshold),
@@ -463,20 +509,22 @@ def trial_metrics(trial: Trial, args) -> list[dict]:
                 "CapMeanAfterShift": r(shift[1]) if shift else None,
                 "AvgFrameMs": r(statistics.fmean(s.frame_ms), 1) if s.frame_ms else None,
                 "MaxFrameMs": r(max(s.frame_ms), 1) if s.frame_ms else None,
+                "MeshFrameAccelerationP95": r(percentile(accelerations, 0.95)),
+                "MeshFrameAccelerationMax": r(max(accelerations)) if accelerations else None,
             })
     return rows
 
 
 def detector_metrics(trial: Trial, args) -> tuple[dict | None, list[dict]]:
     """Ground Truth(정답)와 Detector 진입 로그를 맞춰 탐지 지연·오탐·미탐을 계산한다 (M4 5번)."""
-    if not trial.detections:
+    if not trial.detections and not trial.ground_truth:
         return None, []
     dets = []
     for d in trial.detections:
         state = d.get("RiskState", "Enter")
         t = fnum(d, "ObservedTime")
         if t is not None and state in ("", "Enter"):
-            dets.append({"actor": d.get("ActorId", "0"), "t": t, "reason": d.get("Reason", ""), "used": False})
+            dets.append({"actor": execution_key(d), "t": t, "reason": d.get("Reason", ""), "used": False})
     dets.sort(key=lambda d: d["t"])
 
     def ref_time(e):
@@ -484,10 +532,10 @@ def detector_metrics(trial: Trial, args) -> tuple[dict | None, list[dict]]:
 
     matches = []
     tp = fn = fp_control = 0
-    events = sorted((e for e in trial.ground_truth if ref_time(e) is not None), key=ref_time)
+    events = sorted((e for e in trial.ground_truth if event_time(e) is not None and ref_time(e) is not None), key=ref_time)
     for e in events:
         t_ref = ref_time(e)
-        hit = next((d for d in dets if not d["used"] and d["actor"] == e.get("ActorId", "0")
+        hit = next((d for d in dets if not d["used"] and d["actor"] == execution_key(e)
                     and t_ref - args.match_before <= d["t"] <= t_ref + args.match_window), None)
         if hit:
             hit["used"] = True
@@ -515,6 +563,7 @@ def detector_metrics(trial: Trial, args) -> tuple[dict | None, list[dict]]:
         "RunId": trial.run_id, "TrialId": trial.trial_id, "Mode": trial.mode,
         "SharpEvents": tp + fn, "TP": tp, "FN": fn, "FP": fp,
         "FP_OnControlEvent": fp_control, "FP_Other": fp_other,
+        "UnmatchedDetections": fp_other,
         "Precision": r(tp / (tp + fp)) if tp + fp else None,
         "Recall": r(tp / (tp + fn)) if tp + fn else None,
         "FPPerMinute": r(fp / minutes) if minutes else None,
@@ -685,6 +734,7 @@ def write_report(path: Path, summary, det_summary, trials, args, warnings):
         "클라이언트 CSV에 `RxStateTime` 열이 없으면 사건 후 첫 수신으로 대신하며, 이때는 사건 전 상태일 수 있음 "
         "(`events.csv`의 `FirstUpdateExact`=0)",
         "- 지연이 있으면 Simulated Proxy는 평소에도 (속도 × 지연)만큼 뒤처짐. 그래서 회복은 0cm가 아니라 사건 전 평균 오차 기준으로 판정함",
+        "- Detector Precision/FP는 기록된 Ground Truth 라벨과의 대응 기준이다. 착지·충돌 등 라벨이 없는 실제 급변도 FP_Other/UnmatchedDetections에 포함될 수 있다",
     ]
     if warnings:
         lines += ["", "## 경고", ""] + [f"- {w}" for w in warnings]
@@ -695,6 +745,11 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("roots", nargs="+", type=Path, help="Trial 폴더 또는 그 상위 폴더 (하위를 모두 찾음)")
     ap.add_argument("--out", type=Path, help="결과 폴더 (기본: 첫 번째 입력 폴더/_analysis)")
+    ap.add_argument("--native", action="store_true", help="Enemy별 native 기록을 수집한 뒤 분석")
+    ap.add_argument("--clock", choices=("wall", "server"), default="wall", help="native 기록 시계: 같은 PC는 wall, 별도 PC는 server")
+    ap.add_argument("--max-gap", type=float, default=None, help="서버 보간 최대 간격(s), native 기본 0.1")
+    ap.add_argument("--budget-tolerance", type=float, default=0.05, help="네트워크 비용 차이를 허용하는 비율")
+    ap.add_argument("--minimum-coverage", type=float, default=0.8, help="공정 비교에 필요한 최소 기록 범위 비율")
     ap.add_argument("--window", type=float, default=1.0, help="사건 후 분석 구간 (s)")
     ap.add_argument("--pre", type=float, default=0.5, help="사건 전 기준 오차 구간 (s)")
     ap.add_argument("--error-threshold", type=float, default=50.0, help="임계 오차 (cm)")
@@ -707,18 +762,26 @@ def main(argv=None):
                     help="서버 속력이 이 값(cm/s) 이상인 샘플만 분석. 정지 구간을 빼고 이동 중 오차만 볼 때 사용")
     args = ap.parse_args(argv)
 
-    paths = find_trials(args.roots)
+    if args.budget_tolerance < 0 or not 0 <= args.minimum_coverage <= 1 or (args.max_gap is not None and args.max_gap <= 0):
+        ap.error("Invalid budget tolerance, coverage or maximum gap")
+    from recording_paths import recording_path
+    out = recording_path(args.out or (args.roots[0] / "_analysis"))
+    args.roots = [recording_path(root) for root in args.roots]
+    if args.native:
+        from collect_recordings import collect
+        paths = collect(args.roots, out / "_collected", args.clock)
+    else:
+        paths = find_trials(args.roots)
     if not paths:
         print(f"{SERVER_FILE}가 있는 폴더를 찾지 못함: {', '.join(map(str, args.roots))}", file=sys.stderr)
         return 1
-    out = args.out or (args.roots[0] / "_analysis")
     out.mkdir(parents=True, exist_ok=True)
 
     trials, event_rows, trial_rows, det_rows, det_matches, warnings = [], [], [], [], [], []
     for p in paths:
-        if out.resolve() in p.parents:
+        if not args.native and out.resolve() in p.parents:
             continue
-        t = load_trial(p, args.min_speed)
+        t = load_trial(p, args.min_speed, args.max_gap)
         trials.append(t)
         if not t.clients:
             warnings.append(f"{p}: 클라이언트 CSV 없음")
@@ -752,6 +815,8 @@ def main(argv=None):
     write_csv(out / "detector_trials.csv", det_rows)
     write_csv(out / "detector_events.csv", det_matches)
     write_report(out / "report.md", summary, det_summary, trials, args, warnings)
+    from native_reports import write_extended_reports
+    write_extended_reports(out, trials, trial_rows, event_rows, det_rows, warnings, args)
     print(f"Trial {len(trials)}개 분석 완료 → {out}")
     for w in warnings:
         print("경고:", w)
