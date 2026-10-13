@@ -20,6 +20,8 @@ enum class ESharpDetectorNetworkDispatchResult : uint8
 // Detector 이벤트 타입을 임의로 정의하지 않으며, Detector 측에서 FSharpMoveSnapshot 계약에 맞게
 // 값을 변환한 뒤 오직 서버 CMC의 사후 상태에 대해 한 번 호출해야 한다.
 // 진단 Actor/합성 이벤트는 정식 실험에 사용하지 않는다.
+// Producer must capture Generation and Segment with the observed state; dispatch never
+// stamps queued events with the current execution generation.
 class GE_AIREPLICATION_API FSharpDetectorNetworkBridge
 {
 public:
