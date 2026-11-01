@@ -50,6 +50,39 @@ AGE_AIReplicationCharacter::AGE_AIReplicationCharacter()
 	// are set in the derived blueprint asset named ThirdPersonCharacter (to avoid direct content references in C++)
 }
 
+void AGE_AIReplicationCharacter::BeginPlay()
+{
+	Super::BeginPlay();
+
+	// Apply after Blueprint defaults have loaded so packaged players share one LAN profile.
+	// Keep movement prediction/correction in CMC; only tune replication and presentation.
+	SetReplicates(true);
+	SetReplicateMovement(true);
+	SetNetUpdateFrequency(60.0f);
+	SetMinNetUpdateFrequency(30.0f);
+	UCharacterMovementComponent* Movement = GetCharacterMovement();
+	Movement->NetworkSmoothingMode = ENetworkSmoothingMode::Exponential;
+	// Shorter LAN smoothing reduces how far remote players trail their latest state.
+	Movement->NetworkSimulatedSmoothLocationTime = 0.06f;
+	Movement->NetworkSimulatedSmoothRotationTime = 0.05f;
+	Movement->ListenServerNetworkSimulatedSmoothLocationTime = 0.05f;
+	Movement->ListenServerNetworkSimulatedSmoothRotationTime = 0.06f;
+	// Initial replication may have allocated prediction data before BeginPlay.
+	// Refresh the cached smoothing times as well as the component properties.
+	if (GetNetMode() == NM_Client || GetNetMode() == NM_ListenServer)
+	{
+		FNetworkPredictionData_Client_Character* Prediction = Movement->GetPredictionData_Client_Character();
+		Prediction->SmoothNetUpdateTime = GetNetMode() == NM_ListenServer
+			? Movement->ListenServerNetworkSimulatedSmoothLocationTime : Movement->NetworkSimulatedSmoothLocationTime;
+		Prediction->SmoothNetUpdateRotationTime = GetNetMode() == NM_ListenServer
+			? Movement->ListenServerNetworkSimulatedSmoothRotationTime : Movement->NetworkSimulatedSmoothRotationTime;
+	}
+	UE_LOG(LogGE_AIReplication, Display,
+		TEXT("[LAN-Player] Actor=%s NetMode=%d Role=%d NetUpdateHz=%.0f MinNetUpdateHz=%.0f Smoothing=Exponential ClientLocationSeconds=%.2f ListenLocationSeconds=%.2f"),
+		*GetName(), static_cast<int32>(GetNetMode()), static_cast<int32>(GetLocalRole()), GetNetUpdateFrequency(), GetMinNetUpdateFrequency(),
+		Movement->NetworkSimulatedSmoothLocationTime, Movement->ListenServerNetworkSimulatedSmoothLocationTime);
+}
+
 void AGE_AIReplicationCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 {
 	// Set up action bindings
