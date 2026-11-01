@@ -30,7 +30,7 @@ public class GE_AIReplication : ModuleRules
 
 		if (Target.bBuildEditor)
 		{
-			PrivateDependencyModuleNames.Add("UnrealEd"); // Editor placement transactions only.
+			PrivateDependencyModuleNames.AddRange(new string[] { "UnrealEd", "AnimGraph", "BlueprintGraph", "KismetCompiler" });
 		}
 
 		PublicIncludePaths.AddRange(new string[] {
