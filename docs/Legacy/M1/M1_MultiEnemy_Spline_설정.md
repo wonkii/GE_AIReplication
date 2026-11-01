@@ -75,7 +75,7 @@ Prepare On Begin Play는 기본 켜짐, Auto Start Trial은 기본 꺼짐이다.
 
 PlayerController 확인은 클라이언트 렌더링/에셋 로딩 완료 응답은 아니다. 관련성·스트리밍으로 실험 Actor가 빠지지 않는지 확인한다.
 
-RunSharpTrial.ps1은 위 옵션을 전달하고 `[Sharp][Group] Started`를 기다린 뒤 측정 시간을 센다. 수동 버튼은 준비/자동 시작 타이머를 취소한다. Dedicated Server를 게임 화면에서 제어하는 Widget/PlayerController RPC는 이번 범위에 추가하지 않았다.
+RunSharpTrial.ps1은 위 옵션을 전달하고 `[Sharp][Group] Started`를 기다린 뒤 측정 시간을 센다. 수동 버튼은 준비/자동 시작 타이머를 취소한다. Client 콘솔에서 서버에 준비·시작·정지를 요청하는 개발용 PlayerController RPC는 [Client 디버그 명령](M1_Client_디버그_명령.md)을 참고한다.
 
 ## 로그와 Detector 계약
 
