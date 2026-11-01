@@ -26,6 +26,7 @@
 		}
 	],
 	"Plugins": [
+		{ "Name": "OnlineSubsystemNull", "Enabled": true },
 		{
 			"Name": "ModelingToolsEditorMode",
 			"Enabled": true,
