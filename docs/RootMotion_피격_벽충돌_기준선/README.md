@@ -1,6 +1,6 @@
 # Root Motion 피격·벽 충돌: 현재 구현과 연구 개발 계획
 
-기준일: **2026-11-02 KST**. 현재 소스, 기존 기능 검사 기록, 선행논문 원문을 대조해 정리했다. 이 폴더가 앞으로 유지할 계획의 진입점이다. Legacy 문서는 변경 이력과 상세 배경으로 참조한다.
+기준일: **2026-11-02 KST**. 공격·피격은 기존 `Lv_Jang`의 Player/Sharp Enemy에 통합했다. 공통 Combat 컴포넌트·피격 인터페이스와 Sharp 어댑터를 사용하며 전용 Character·레벨·BP는 제거했다. 실행·확장은 [04](04_공격피격_실행.md)를 따른다. 이 폴더는 정량 연구 계획의 진입점이며 Legacy는 변경 이력으로 참조한다.
 
 ## 1. 무엇을 개발하는가
 
@@ -24,11 +24,11 @@
 
 | 항목 | 상태 | 근거와 남은 일 |
 |---|---|---|
-| 공격 01→02→03 순환, 최대 2회 입력 예약 | 구현됨 | HitWallPlayerCharacter. 정량 측정에서는 1타만 사용 |
-| Notify State·Socket Box·서버 명중 판정 | 구현됨 | overlap/이동 경로 sweep, 중복 타격 방지, 정면·차폐 검사 |
-| Enemy 단일 Root Motion 피격 | 구현됨 | HitWallEnemyCharacter, ReactionId 중복 방지 multicast |
-| 전용 맵·BP·애니메이션 생성 도구 | 구현됨 | GenerateHitWallAssets.py, HitWallAssetSetup |
-| 벽/무장애/입력 예약/서버+클라이언트 기능 검사 | 기존 통과 기록 있음 | 2026-11-02 01:22 KST 실행. 이번 문서 작업에서 재실행한 결과는 아님 |
+| Montage Notify별 다음 1타 입력·01→02→03 연결 | 구현됨 | ComboInputWindow/MeleeAttackComponent. 구간 밖 입력은 폐기, 정량 측정은 1타만 사용 |
+| Notify State·Socket Box·서버 명중 판정 | 구현됨 | 공통 피격 인터페이스, overlap/sweep, 중복 타격 방지, 차폐 검사와 방향 무관 접촉 |
+| Enemy 단일 Root Motion 피격 | 구현됨 | HitReactionComponent, ReactionId 중복 방지·상태 복제 |
+| 기존 Lv_Jang 통합·공통 애니메이션 생성 | 구현됨 | ConfigureJangCombat.py, CombatAssetSetup, SharpCombatAdapterComponent |
+| Lv_Jang 기능 검사 | TestJangCombat.ps1 | 현재 통합 검사 결과는 작업별 Saved README/summary로 확인. 이전 01:22 KST 전용 레벨 기록과 구분 |
 | 반복 Trial·자동 완료/tail·정량 Recorder | 미구현 | 가장 먼저 개발할 항목 |
 | 안전 목표·Motion Warping·벽 반응 전환 | 미구현 | 기준선 이후 추가. 플러그인/모듈 의존성도 아직 없음 |
 | 환경별 다중 후보 선택·행동 계획 공유 | 미구현 | 논문 원리의 프로젝트 적용안 |
