@@ -6,6 +6,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/World.h"
 #include "GameFramework/GameStateBase.h"
+#include "Combat/HitReactionComponent.h"
 
 USharpVisualPredictorComponent::USharpVisualPredictorComponent()
 {
@@ -68,8 +69,16 @@ void USharpVisualPredictorComponent::SetOwnership(bool bEnabled)
 void USharpVisualPredictorComponent::QueueSnapshot(const FSharpMoveSnapshot& Snapshot)
 {
 	if (!Enemy) { Enemy = Cast<ASharpEnemyCharacter>(GetOwner()); }
-	if (!Enemy || Enemy->GetLocalRole() != ROLE_SimulatedProxy) { return; }
+	if (!Enemy || Enemy->GetLocalRole() != ROLE_SimulatedProxy || Enemy->HitReaction->IsReacting() || Snapshot.ServerTime <= CombatSnapshotCutoff) { return; }
 	Pending = Snapshot; bPending = true;
+}
+
+void USharpVisualPredictorComponent::HandleCombatChanged()
+{
+	if (!Enemy) Enemy = Cast<ASharpEnemyCharacter>(GetOwner());
+	if (!Enemy) return;
+	if (const auto* GameState = GetWorld()->GetGameState()) CombatSnapshotCutoff = GameState->GetServerWorldTimeSeconds();
+	bPending = false; StopPrediction(TEXT("CombatReaction")); SetOwnership(false);
 }
 
 void USharpVisualPredictorComponent::NotifyCorrection(const FVector& OldMeshPosition)
@@ -92,6 +101,7 @@ void USharpVisualPredictorComponent::TickComponent(float DeltaTime, ELevelTick T
 {
 	Super::TickComponent(DeltaTime, TickType, TickFunction);
 	if (!Enemy || Enemy->GetLocalRole() != ROLE_SimulatedProxy || !Enemy->GetMesh()) { return; }
+	if (Enemy->HitReaction->IsReacting()) { bPending = false; SetOwnership(false); return; }
 	HandleSessionChanged();
 	const FSharpEnemyTrialStatus& Status = Enemy->Experiment->Status;
 	const FSharpVisualPredictionSettings& Settings = Status.Prediction;

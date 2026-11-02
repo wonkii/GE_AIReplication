@@ -7,9 +7,10 @@ class GE_AIREPLICATION_API UAnimNotifyState_AttackHitWindow : public UAnimNotify
 {
     GENERATED_BODY()
 public:
-    UPROPERTY(EditAnywhere, Category="Hit") FName SocketName = TEXT("AttackSocket_R");
+    UAnimNotifyState_AttackHitWindow();
+    UPROPERTY(EditAnywhere, Category="Combat") FName SocketName = TEXT("AttackSocket_R");
     UPROPERTY(EditAnywhere, Category="Hit") FVector BoxExtent = FVector(28, 28, 28);
     UPROPERTY(EditAnywhere, Category="Hit") FVector Offset = FVector::ZeroVector;
-    virtual void NotifyBegin(USkeletalMeshComponent*, UAnimSequenceBase*, float, const FAnimNotifyEventReference&) override;
-    virtual void NotifyEnd(USkeletalMeshComponent*, UAnimSequenceBase*, const FAnimNotifyEventReference&) override;
+    virtual void BranchingPointNotifyBegin(FBranchingPointNotifyPayload& Payload) override;
+    virtual void BranchingPointNotifyEnd(FBranchingPointNotifyPayload& Payload) override;
 };

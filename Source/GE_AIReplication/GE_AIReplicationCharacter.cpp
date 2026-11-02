@@ -11,9 +11,11 @@
 #include "EnhancedInputSubsystems.h"
 #include "InputActionValue.h"
 #include "GE_AIReplication.h"
+#include "Combat/MeleeAttackComponent.h"
 
 AGE_AIReplicationCharacter::AGE_AIReplicationCharacter()
 {
+	MeleeAttack = CreateDefaultSubobject<UMeleeAttackComponent>(TEXT("MeleeAttack"));
 	// Set size for collision capsule
 	GetCapsuleComponent()->InitCapsuleSize(42.f, 96.0f);
 		
@@ -89,7 +91,7 @@ void AGE_AIReplicationCharacter::SetupPlayerInputComponent(UInputComponent* Play
 	if (UEnhancedInputComponent* EnhancedInputComponent = Cast<UEnhancedInputComponent>(PlayerInputComponent)) {
 		
 		// Jumping
-		EnhancedInputComponent->BindAction(JumpAction, ETriggerEvent::Started, this, &ACharacter::Jump);
+		EnhancedInputComponent->BindAction(JumpAction, ETriggerEvent::Started, this, &AGE_AIReplicationCharacter::DoJumpStart);
 		EnhancedInputComponent->BindAction(JumpAction, ETriggerEvent::Completed, this, &ACharacter::StopJumping);
 
 		// Moving
@@ -98,6 +100,7 @@ void AGE_AIReplicationCharacter::SetupPlayerInputComponent(UInputComponent* Play
 
 		// Looking
 		EnhancedInputComponent->BindAction(LookAction, ETriggerEvent::Triggered, this, &AGE_AIReplicationCharacter::Look);
+		MeleeAttack->BindInput(EnhancedInputComponent);
 	}
 	else
 	{
@@ -125,6 +128,7 @@ void AGE_AIReplicationCharacter::Look(const FInputActionValue& Value)
 
 void AGE_AIReplicationCharacter::DoMove(float Right, float Forward)
 {
+	if (MeleeAttack && MeleeAttack->IsAttacking()) return;
 	if (GetController() != nullptr)
 	{
 		// find out which way is forward
@@ -143,6 +147,11 @@ void AGE_AIReplicationCharacter::DoMove(float Right, float Forward)
 	}
 }
 
+bool AGE_AIReplicationCharacter::CanJumpInternal_Implementation() const
+{
+	return (!MeleeAttack || !MeleeAttack->IsAttacking()) && Super::CanJumpInternal_Implementation();
+}
+
 void AGE_AIReplicationCharacter::DoLook(float Yaw, float Pitch)
 {
 	if (GetController() != nullptr)
@@ -155,6 +164,7 @@ void AGE_AIReplicationCharacter::DoLook(float Yaw, float Pitch)
 
 void AGE_AIReplicationCharacter::DoJumpStart()
 {
+	if (MeleeAttack && MeleeAttack->IsAttacking()) return;
 	// signal the character to jump
 	Jump();
 }
