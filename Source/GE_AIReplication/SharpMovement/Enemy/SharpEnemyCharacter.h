@@ -14,6 +14,7 @@ class USharpMovementDetectorComponent;
 class USharpMovementRecorderComponent;
 class USharpVisualPredictorComponent;
 class UHitReactionComponent;
+class UReactionEnvironmentComponent;
 class USharpCombatAdapterComponent;
 
 // Physical character and standard CMC replication. Components own steering,
@@ -25,6 +26,7 @@ class GE_AIREPLICATION_API ASharpEnemyCharacter : public ACharacter
 public:
 	ASharpEnemyCharacter(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Combat") TObjectPtr<UHitReactionComponent> HitReaction;
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Combat") TObjectPtr<UReactionEnvironmentComponent> ReactionEnvironment;
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Combat") TObjectPtr<USharpCombatAdapterComponent> CombatAdapter;
 	UPROPERTY(EditInstanceOnly, Replicated, BlueprintReadOnly, Category="Sharp Experiment|Identity", meta=(ClampMin="1"))
 	int32 ExperimentActorId = 0;

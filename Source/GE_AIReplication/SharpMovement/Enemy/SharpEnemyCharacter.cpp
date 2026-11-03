@@ -13,6 +13,7 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Net/UnrealNetwork.h"
 #include "Combat/HitReactionComponent.h"
+#include "Combat/ReactionEnvironmentComponent.h"
 #include "SharpCombatAdapterComponent.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogSharpEnemyM1, Log, All);
@@ -26,6 +27,7 @@ ASharpEnemyCharacter::ASharpEnemyCharacter(const FObjectInitializer& ObjectIniti
 	AutoPossessAI = EAutoPossessAI::PlacedInWorldOrSpawned;
 	PrimaryActorTick.bCanEverTick = false;
 	HitReaction = CreateDefaultSubobject<UHitReactionComponent>(TEXT("HitReaction"));
+	ReactionEnvironment = CreateDefaultSubobject<UReactionEnvironmentComponent>(TEXT("ReactionEnvironment"));
 	CombatAdapter = CreateDefaultSubobject<USharpCombatAdapterComponent>(TEXT("CombatAdapter"));
 	UpdatePolicy = CreateDefaultSubobject<USharpUpdatePolicy>(TEXT("SharpUpdatePolicy"));
 	SplineFollower = CreateDefaultSubobject<USharpSplineFollowerComponent>(TEXT("SplineFollower"));

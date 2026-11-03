@@ -3,10 +3,12 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "CombatHitReceiver.h"
+#include "ReactionWarpComponent.h"
 #include "HitReactionComponent.generated.h"
 
 class ACharacter;
 class UAnimMontage;
+class URootMotionModifier;
 
 /** Side of the attacker relative to the victim BEFORE the reaction turns it. */
 UENUM(BlueprintType)
@@ -29,6 +31,7 @@ struct FCombatReactionState
     UPROPERTY() ECombatHitDirection Direction = ECombatHitDirection::Front;
     // World yaw is resolved once on authority, never from a client's attacker transform.
     UPROPERTY() float FacingYaw = 0.f;
+    UPROPERTY() FReactionWarpTarget WarpTarget;
 };
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FCombatReactionChanged, bool, bActive, int32, ReactionId);
@@ -61,6 +64,10 @@ private:
     UPROPERTY(Transient) TObjectPtr<ACharacter> Character;
     UPROPERTY(ReplicatedUsing=OnRep_State) FCombatReactionState State;
     UPROPERTY(Transient) TObjectPtr<UAnimMontage> ActiveMontage;
+    TWeakObjectPtr<URootMotionModifier> ActiveWarpModifier;
+    float DebugWarpWindowEnd = 0.f;
+    int32 DebugWarpMontageInstanceId = INDEX_NONE;
+    UFUNCTION() void SampleWarpMovement(float DeltaSeconds, FVector OldLocation, FVector OldVelocity);
     UFUNCTION() void OnRep_State();
     UFUNCTION(NetMulticast, Reliable) void MulticastState(FCombatReactionState NewState);
     void ApplyState();

@@ -25,7 +25,8 @@ public class GE_AIReplication : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[] {
 			"Json",
-			"JsonUtilities"
+			"JsonUtilities",
+			"MotionWarping"
 		});
 
 		if (Target.bBuildEditor)

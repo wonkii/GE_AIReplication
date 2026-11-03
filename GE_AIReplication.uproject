@@ -26,6 +26,7 @@
 		}
 	],
 	"Plugins": [
+		{ "Name": "MotionWarping", "Enabled": true },
 		{ "Name": "OnlineSubsystemNull", "Enabled": true },
 		{
 			"Name": "ModelingToolsEditorMode",
