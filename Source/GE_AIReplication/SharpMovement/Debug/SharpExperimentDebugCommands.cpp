@@ -34,6 +34,30 @@ void AGE_AIReplicationPlayerController::SharpStatus()
 	RequestSharpDebugCommand(ESharpExperimentDebugCommand::Status);
 }
 
+void AGE_AIReplicationPlayerController::SharpServerOnlyMovement(int32 Enabled)
+{
+#if !UE_BUILD_SHIPPING && !UE_BUILD_TEST
+	if (!IsLocalController() || !GetWorld() || !GetWorld()->IsGameWorld()) { return; }
+	if (!HasAuthority())
+	{
+		ClientSharpDebugResult(TEXT("[Sharp][Debug] Run SharpServerOnlyMovement on the Listen Server."), false);
+		return;
+	}
+	if (Enabled != 0 && Enabled != 1)
+	{
+		ClientSharpDebugResult(TEXT("[Sharp][Debug] Usage: SharpServerOnlyMovement 0|1"), false);
+		return;
+	}
+	for (TActorIterator<ASharpExperimentManager> It(GetWorld()); It; ++It)
+	{
+		It->SetServerOnlyMovementDemo(Enabled == 1);
+		ClientSharpDebugResult(FString::Printf(TEXT("[Sharp][Debug] Server-only movement demo=%d"), Enabled), true);
+		return;
+	}
+	ClientSharpDebugResult(TEXT("[Sharp][Debug] Rejected: no loaded ExperimentManager in the server world."), false);
+#endif
+}
+
 void AGE_AIReplicationPlayerController::RequestSharpDebugCommand(ESharpExperimentDebugCommand Command)
 {
 	if (!IsLocalController() || !GetWorld() || !GetWorld()->IsGameWorld()) { return; }

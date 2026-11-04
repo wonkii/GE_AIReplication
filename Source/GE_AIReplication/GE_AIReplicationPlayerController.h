@@ -27,6 +27,7 @@ public:
 	UFUNCTION(Exec) void SharpStop();
 	UFUNCTION(Exec) void SharpReset();
 	UFUNCTION(Exec) void SharpStatus();
+	UFUNCTION(Exec) void SharpServerOnlyMovement(int32 Enabled);
 
 private:
 
