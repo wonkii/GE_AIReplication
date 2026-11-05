@@ -42,7 +42,8 @@ namespace HitWallProbe
 		TEXT("cap_x,cap_y,cap_z,cap_bottom_z,yaw,vel_x,vel_y,vel_z,")
 		TEXT("mesh_x,mesh_y,mesh_z,pelvis_x,pelvis_y,pelvis_z,")
 		TEXT("floor_hit,floor_walkable,floor_dist,floor_z,")
-		TEXT("wall_hits,wall_nx,wall_ny,wall_nz,wall_actor,overlap,overlap_actor,pawn_hits,pawn_actor");
+		TEXT("wall_hits,wall_nx,wall_ny,wall_nz,wall_actor,overlap,overlap_actor,pawn_hits,pawn_actor,")
+		TEXT("foot_l_x,foot_l_y,foot_l_z,foot_r_x,foot_r_y,foot_r_z,ball_l_x,ball_l_y,ball_l_z,ball_r_x,ball_r_y,ball_r_z");
 
 	static const TCHAR* EventHeader =
 		TEXT("session,role,actor,reaction_id,event,label,direction,facing_yaw,utc_ms,world_t,")
@@ -277,6 +278,15 @@ void UHitWallProbeComponent::WriteFrame(float DeltaTime)
 	const FVector Pelvis = Mesh->GetBoneIndex(PelvisName) != INDEX_NONE
 		? Mesh->GetBoneLocation(PelvisName) : Mesh->GetComponentLocation();
 
+	// Feet in world space, after animation and mesh smoothing. Empty if the skeleton lacks the bone.
+	const auto Bone = [Mesh](const TCHAR* Name) -> FString
+	{
+		const FName BoneName(Name);
+		return Mesh->GetBoneIndex(BoneName) != INDEX_NONE ? HitWallProbe::V3(Mesh->GetBoneLocation(BoneName)) : FString(TEXT(",,"));
+	};
+	const FString Feet = FString::Join(TArray<FString>{
+		Bone(TEXT("foot_l")), Bone(TEXT("foot_r")), Bone(TEXT("ball_l")), Bone(TEXT("ball_r"))}, TEXT(","));
+
 	const FFindFloorResult& Floor = Movement->CurrentFloor;
 	const double FloorZ = Floor.bBlockingHit ? Floor.HitResult.ImpactPoint.Z : 0.0;
 
@@ -317,7 +327,7 @@ void UHitWallProbeComponent::WriteFrame(float DeltaTime)
 		FString::FromInt(PendingWallHits), HitWallProbe::V3(PendingWallNormal),
 		FSharpRecordingFiles::Csv(PendingWallActor), bOverlap ? TEXT("1") : TEXT("0"),
 		FSharpRecordingFiles::Csv(OverlapActor),
-		FString::FromInt(PendingPawnHits), FSharpRecordingFiles::Csv(PendingPawnActor)}, TEXT(","));
+		FString::FromInt(PendingPawnHits), FSharpRecordingFiles::Csv(PendingPawnActor), Feet}, TEXT(","));
 	Files.Add(TEXT("hit_frames.csv"), HitWallProbe::FrameHeader, Row);
 
 	++FrameCount;

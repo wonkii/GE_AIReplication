@@ -28,6 +28,7 @@ PELVIS_PEN_CM = 5.0
 CLIENT_ERR_CM = 20.0
 JUMP_CM = 10.0          # one-frame mesh move that reads as a snap at 60 fps (= 600 cm/s)
 REPRO_RATIO = 0.8
+PLANTED_CMS = 30.0      # a foot moving slower than this in the free (no-wall) run is planted by the animation
 
 SERVER_ROLES = {"Standalone", "ListenServer", "DedicatedServer"}
 
@@ -37,6 +38,69 @@ def fnum(value: str, default: float = math.nan) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def foot_points(frames: list[dict], side: str):
+    """(montage_pos, x, y, world_t) of the ball bone (else foot bone) while the montage plays."""
+    bone = f"ball_{side}" if frames and frames[0].get(f"ball_{side}_x") else f"foot_{side}"
+    pts = []
+    for fr in frames:
+        pos = fnum(fr.get("montage_pos", "-1"))
+        if pos >= 0 and fr.get(f"{bone}_x"):
+            pts.append((pos, fnum(fr[f"{bone}_x"]), fnum(fr[f"{bone}_y"]), fnum(fr["world_t"])))
+    return pts
+
+
+def planted_reference(reactions) -> dict:
+    """Per montage and foot: montage positions where the foot is planted in a free run.
+
+    This hit animation drags its feet low, so height cannot tell a planted foot from a
+    sliding one. Instead the free run (warp off, no wall or pawn contact) defines where the
+    animation itself keeps a foot still in the world. In any other run, movement of that
+    foot at the same montage position is sliding caused by the wall or the warp.
+    """
+    ref = {}
+    for r in reactions:
+        m = r.metrics
+        if not r.is_server or m["wall_hit_frames"] or m["pawn_hit_frames"] or "warp1" in m["label"]:
+            continue
+        if m["montage"] in ref:
+            continue
+        sides = {}
+        for side in ("l", "r"):
+            pts = foot_points(r.frames, side)
+            flags = []
+            for prev, cur in zip(pts, pts[1:]):
+                dt = cur[3] - prev[3]
+                speed = math.dist(cur[1:3], prev[1:3]) / dt if dt > 0 else 0.0
+                flags.append((cur[0], speed < PLANTED_CMS))
+            sides[side] = flags
+        if any(sides.values()):
+            ref[m["montage"]] = sides
+    return ref
+
+
+def foot_slide(r, ref) -> dict:
+    sides = ref.get(r.metrics["montage"])
+    if not sides:
+        return {"foot_slide_cm": math.nan, "foot_slide_peak_cms": math.nan, "foot_planted_frames": 0}
+    total, peak, planted = 0.0, 0.0, 0
+    for side, flags in sides.items():
+        if not flags:
+            continue
+        positions = [f[0] for f in flags]
+        pts = foot_points(r.frames, side)
+        for prev, cur in zip(pts, pts[1:]):
+            i = min(range(len(positions)), key=lambda k: abs(positions[k] - cur[0]))
+            if abs(positions[i] - cur[0]) > 0.02 or not flags[i][1]:
+                continue
+            planted += 1
+            d = math.dist(cur[1:3], prev[1:3])
+            total += d
+            dt = cur[3] - prev[3]
+            if dt > 0:
+                peak = max(peak, d / dt)
+    return {"foot_slide_cm": total, "foot_slide_peak_cms": peak, "foot_planted_frames": planted}
 
 
 @dataclass
@@ -214,19 +278,20 @@ def percentile(values, p):
 
 
 def assign_groups(reactions: list[Reaction], mode: str) -> float:
-    """W0..W3 from the measured wall distance, using L = open-space retreat (doc 02 §4)."""
-    open_retreats = [r.metrics["max_retreat_cm"] for r in reactions
-                     if r.is_server and r.metrics["sweep_dist_cm"] < 0]
-    L = statistics.median(open_retreats) if open_retreats else math.nan
+    """Group reactions. L = median server retreat of reactions that never touched a wall."""
+    free = [r.metrics["max_retreat_cm"] for r in reactions
+            if r.is_server and r.metrics["wall_hit_frames"] == 0 and r.metrics["pawn_hit_frames"] == 0
+            and "warp1" not in r.metrics["label"]]  # a warped reaction is shortened on purpose
+    L = statistics.median(free) if free else math.nan
+    use_label = mode == "label" or (mode == "auto" and all(r.metrics["label"] for r in reactions))
     for r in reactions:
-        if mode == "label" and r.metrics["label"]:
+        if use_label:
             r.metrics["group"] = r.metrics["label"]
             continue
         d = r.metrics["sweep_dist_cm"]
         if d < 0:
             r.metrics["group"] = "W0 no wall"
         elif math.isnan(L):
-            # No open-space run yet: fall back to 25 cm distance bins.
             lo = int(d // 25) * 25
             r.metrics["group"] = f"wall {lo}-{lo + 25}cm"
         elif d >= 1.2 * L:
@@ -260,8 +325,9 @@ def fmt(v) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("root", type=Path, help="Saved/HitWallProbe or any folder above the recordings")
-    ap.add_argument("--group", choices=["wall", "label"], default="wall",
-                    help="wall: W0~W3 from measured wall distance (default). label: hitwall.Label text.")
+    ap.add_argument("--group", choices=["auto", "wall", "label"], default="auto",
+                    help="auto (default): label when every reaction has one (hitwall.Run sets gapNNN_warpN), else wall. "
+                         "wall: W0~W3 from measured wall distance. label: hitwall.Label text.")
     ap.add_argument("--out", type=Path, help="folder for reactions.csv, summary.csv, report.md")
     args = ap.parse_args()
 
@@ -272,6 +338,9 @@ def main() -> int:
     for r in reactions:
         compute(r)
     pair_clients(reactions)
+    ref = planted_reference(reactions)
+    for r in reactions:
+        r.metrics.update(foot_slide(r, ref))
     L = assign_groups(reactions, args.group)
 
     groups: dict[tuple, list[Reaction]] = defaultdict(list)
@@ -289,7 +358,8 @@ def main() -> int:
         row = {"group": group, "side": side, "n": n,
                "pawn_contact": sum(1 for r in rs if r.metrics["pawn_hit_frames"] > 0),
                "median_retreat_cm": statistics.median(r.metrics["max_retreat_cm"] for r in rs),
-               "max_capsule_rise_cm": max(r.metrics["max_capsule_rise_cm"] for r in rs)}
+               "max_capsule_rise_cm": max(r.metrics["max_capsule_rise_cm"] for r in rs),
+               "median_foot_slide_cm": statistics.median(r.metrics["foot_slide_cm"] for r in rs)}
         for k in names:
             row[k] = counts.get(k, 0) if (k != "client_server_gap" or side == "client") else ""
         reproduced = [k for k in names if isinstance(row[k], int) and n >= 1 and row[k] / n >= REPRO_RATIO]
@@ -298,8 +368,8 @@ def main() -> int:
 
     print(f"Reactions: {len(reactions)} (server {sum(r.is_server for r in reactions)}, "
           f"client {sum(not r.is_server for r in reactions)})")
-    print(f"L (open-space max retreat, server median): {fmt(L)} cm\n")
-    header = ["group", "side", "n", "pawn_contact", "median_retreat_cm", "max_capsule_rise_cm"] + names + ["reproduced"]
+    print(f"L (max retreat without any wall contact, server median): {fmt(L)} cm\n")
+    header = ["group", "side", "n", "pawn_contact", "median_retreat_cm", "max_capsule_rise_cm", "median_foot_slide_cm"] + names + ["reproduced"]
     widths = [max(len(h), *(len(fmt(r[h])) for r in summary_rows)) for h in header]
     print("  ".join(h.ljust(w) for h, w in zip(header, widths)))
     for r in summary_rows:
@@ -308,7 +378,9 @@ def main() -> int:
           f"Falling/Flying, mesh step>{JUMP_CM}cm/frame, client-server>{CLIENT_ERR_CM}cm. "
           f"Reproduced = >= {int(REPRO_RATIO * 100)}% of reactions in the group (needs n>=10).\n"
           "pawn_contact = reactions where another character (e.g. the attacker) touched the enemy; "
-          "use hitwall.Hit so the player does not follow.")
+          "use hitwall.Run so the player does not follow.\n"
+          f"foot_slide = horizontal travel of a foot at montage times where the free run (warp off, no wall) "
+          f"keeps that foot still (< {PLANTED_CMS:.0f} cm/s). Free run is ~0 by construction; needs one free run.")
 
     if args.out:
         args.out.mkdir(parents=True, exist_ok=True)
