@@ -34,7 +34,7 @@ param(
 
     [int[]]$Trials = @(1),
 
-    [string]$BatchId = (Get-Date -Format 'yyyyMMdd-HHmmss'),
+    [string]$BatchId = ((Get-Date -Format 'yyyyMMdd-HHmmssfff') + '-' + [guid]::NewGuid().ToString('N').Substring(0,4)),
 
     # 클라이언트 수 = 프로필 개수. 1번 클라이언트부터 차례로 적용
     [ValidateSet('N0', 'N1', 'N2', 'N3', 'N4', 'Custom')]
@@ -198,6 +198,10 @@ if (-not $DryRun) {
     if (-not (Test-Path $Project)) { throw ".uproject를 찾을 수 없음: $Project  (-Project로 경로 지정)" }
 }
 $BatchDir = Join-Path (Join-Path (Split-Path $Project -Parent) 'Saved\Experiments') $BatchId
+& (Join-Path $PSScriptRoot 'NewSavedTask.ps1') -TaskName 'Sharp-Trials' -OutputDirectory $BatchDir `
+    -Description "Sharp Movement 비교 실험 배치 $BatchId" `
+    -Command "Scripts/RunSharpTrial.ps1 Mode=$($Mode -join ',') Trials=$($Trials -join ',') Profiles=$($ClientProfiles -join ',') DryRun=$DryRun" `
+    -Artifacts @('<RunId>/T<TrialId>/: 조건별 실행 결과와 README', '각 Trial의 run_meta.json: 실제 실행 조건과 Valid 판정') | Out-Null
 $results = @()
 
 Write-Host "BatchId=$BatchId  모드=$($Mode -join ',')  Trial=$($Trials -join ',')  클라이언트=$($ClientProfiles -join ',')"
@@ -211,6 +215,10 @@ foreach ($m in $Mode) {
     foreach ($trial in $Trials) {
         $outDir = Join-Path (Join-Path $BatchDir $runId) "T$trial"
         New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+        & (Join-Path $PSScriptRoot 'NewSavedTask.ps1') -TaskName 'Sharp-Trial' -OutputDirectory $outDir `
+            -Description "Run=$runId Trial=$trial 모드별 서버/클라이언트 실험 (DryRun=$DryRun)" `
+            -Command 'Scripts/RunSharpTrial.ps1; 실제 조건/명령은 run_meta.json 참조' `
+            -Artifacts @('run_meta.json: 조건과 검증 결과', 'server.log, client_*.log: 실행 로그', 'Native/: Recorder CSV와 manifest 원본', '*.utrace: NetTrace 활성화 시 네트워크 추적') | Out-Null
         Write-Host ""
         Write-Host "=== $runId  Trial $trial ==="
 
@@ -371,6 +379,7 @@ foreach ($m in $Mode) {
         $meta.Issues = $issues
         $meta.Valid = (-not $DryRun) -and ($issues.Count -eq 0)
         Save-Meta $meta $outDir
+        Add-Content -LiteralPath (Join-Path $outDir 'README.md') -Value "`n실행 결과: DryRun=$DryRun Valid=$($meta.Valid). 상세 조건과 문제 목록은 run_meta.json을 확인하세요." -Encoding UTF8
         if ($issues.Count -gt 0) { $issues | ForEach-Object { Write-Warning $_ } }
         if ($NetTrace -and -not $DryRun) {
             $enemyCount = 0
@@ -387,6 +396,7 @@ foreach ($m in $Mode) {
 
 Write-Host ""
 $results | Format-Table -AutoSize | Out-String -Width 200 | Write-Host
+Add-Content -LiteralPath (Join-Path $BatchDir 'README.md') -Value "`n배치 종료: $($results.Count)개 Trial 처리. DryRun=$DryRun. 각 Trial의 README와 run_meta.json에서 실제 검증 결과를 확인하세요." -Encoding UTF8
 $analysis = Join-Path $PSScriptRoot 'Analysis\sharp_metrics.py'
 $convert = Join-Path $PSScriptRoot 'Analysis\convert_logs.py'
 Write-Host "Recorder가 없을 때 (로그 변환): python `"$convert`" `"$BatchDir`""

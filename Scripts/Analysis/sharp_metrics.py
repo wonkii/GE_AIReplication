@@ -744,7 +744,7 @@ def write_report(path: Path, summary, det_summary, trials, args, warnings):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("roots", nargs="+", type=Path, help="Trial 폴더 또는 그 상위 폴더 (하위를 모두 찾음)")
-    ap.add_argument("--out", type=Path, help="결과 폴더 (기본: 첫 번째 입력 폴더/_analysis)")
+    ap.add_argument("--out", type=Path, help="결과 폴더 (기본: 첫 번째 입력 폴더/_analysis/<작업ID>)")
     ap.add_argument("--native", action="store_true", help="Enemy별 native 기록을 수집한 뒤 분석")
     ap.add_argument("--clock", choices=("wall", "server"), default="wall", help="native 기록 시계: 같은 PC는 wall, 별도 PC는 server")
     ap.add_argument("--max-gap", type=float, default=None, help="서버 보간 최대 간격(s), native 기본 0.1")
@@ -765,13 +765,18 @@ def main(argv=None):
     if args.budget_tolerance < 0 or not 0 <= args.minimum_coverage <= 1 or (args.max_gap is not None and args.max_gap <= 0):
         ap.error("Invalid budget tolerance, coverage or maximum gap")
     from recording_paths import recording_path
-    out = recording_path(args.out or (args.roots[0] / "_analysis"))
+    from task_readme import describe_task, task_id
+    out = recording_path(args.out or (args.roots[0] / "_analysis" / task_id('metrics')))
     args.roots = [recording_path(root) for root in args.roots]
+    describe_task(out, 'Sharp Movement 분석', '이동 오차, 탐지 및 연결 비용 비교',
+                  f'sharp_metrics.py roots={args.roots} native={args.native} clock={args.clock}',
+                  ['report.html: 브라우저로 여는 보고서', 'report.md, report.json: 문서/기계 판독 보고서',
+                   '*.csv: 지표별 분석표. 원본 기록과 구분하여 사용', '_collected/: native 원본을 분석용으로 수집한 CSV'])
     if args.native:
         from collect_recordings import collect
         paths = collect(args.roots, out / "_collected", args.clock)
     else:
-        paths = find_trials(args.roots)
+        paths = [path for path in find_trials(args.roots) if '_analysis' not in path.parts]
     if not paths:
         print(f"{SERVER_FILE}가 있는 폴더를 찾지 못함: {', '.join(map(str, args.roots))}", file=sys.stderr)
         return 1
@@ -818,6 +823,8 @@ def main(argv=None):
     from native_reports import write_extended_reports
     write_extended_reports(out, trials, trial_rows, event_rows, det_rows, warnings, args)
     print(f"Trial {len(trials)}개 분석 완료 → {out}")
+    with (out / 'README.md').open('a', encoding='utf-8') as readme:
+        readme.write(f'\n분석 완료: Trial {len(trials)}개, 경고 {len(warnings)}건. 상세 내용은 report.html 참조.\n')
     for w in warnings:
         print("경고:", w)
     return 0
