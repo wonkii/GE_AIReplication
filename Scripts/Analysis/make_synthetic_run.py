@@ -172,6 +172,10 @@ def make_trial(root, mode, trial, duration, seed):
     run_id = f"SYN-{mode}"
     out = root / run_id / f"T{trial}"
     out.mkdir(parents=True, exist_ok=True)
+    from task_readme import describe_task
+    describe_task(out, '합성 실험 데이터', '분석 스크립트 검증용 가짜 데이터 (실측 결과 아님)',
+                  f'make_synthetic_run.py mode={mode} trial={trial} duration={duration} seed={seed}',
+                  ['run_meta.json: Synthetic=true 및 생성 조건', '*.csv: 분석기 검증용 합성 궤적과 이벤트'])
     clients = {"1": dict(Profile="N0", **PROFILES["N0"]), "2": dict(Profile="N2", **PROFILES["N2"])}
     meta = dict(RunId=run_id, TrialId=trial, Mode=mode, Synthetic=True, MeasureSec=duration, Clients=clients,
                 Valid=True)

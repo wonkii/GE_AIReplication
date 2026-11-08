@@ -11,10 +11,12 @@ public class AIReplicationNet : ModuleRules
             {
                 "Core",
                 "CoreUObject",
-                "Engine"
+                "Engine",
+                "OnlineSubsystem",
+                "OnlineSubsystemUtils"
             }
         );
 
-        PrivateDependencyModuleNames.Add("AIReplicationCore");
+		PrivateDependencyModuleNames.AddRange(new string[] { "AIReplicationCore", "Slate", "SlateCore", "InputCore", "Sockets", "Networking" });
 	}
 }
