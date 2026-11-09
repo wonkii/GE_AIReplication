@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>벽 앞 피격 · 네 모드 움직임 비교</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,'Malgun Gothic',sans-serif;color:#e5edf5;background:#0b111b}*{box-sizing:border-box}body{max-width:1540px;margin:auto;padding:28px}h1{font-size:27px;margin:0 0 10px}p{color:#afc0d3;line-height:1.65;margin:8px 0}strong{color:#eef5ff}.controls{display:flex;flex-wrap:wrap;align-items:center;gap:14px;background:#162132;border:1px solid #304259;padding:15px;border-radius:12px;margin:22px 0 12px}label{font-size:13px;display:flex;align-items:center;gap:7px}select,button{font:inherit;color:inherit;background:#25364d;border:1px solid #4a617b;border-radius:6px;padding:7px;cursor:pointer}button{min-width:65px}input[type=range]{flex:1;min-width:140px;accent-color:#69d3c5}.timeline{display:flex;gap:15px;align-items:center;padding:6px 0 15px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.panel{background:#111c2b;border:1px solid #314257;border-radius:12px;overflow:hidden}.heading{display:flex;justify-content:space-between;align-items:center;padding:13px 17px 0;gap:10px}.heading h2{font-size:19px;margin:0}.status{font-size:12px;border-radius:20px;background:#203d40;color:#95e7d8;padding:5px 9px}.status.fallback{background:#4b3821;color:#ffce86}canvas{width:100%;height:320px;display:block}.metric{padding:0 17px 14px;font-size:13px;color:#adc0d6;line-height:1.8}.metric b{font-size:18px;color:#fff}.note{font-size:13px}.legend{display:flex;gap:18px;flex-wrap:wrap;font-size:13px;margin:12px 0;color:#c2cfdf}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px}.details{background:#111c2b;border:1px solid #304259;border-radius:12px;padding:17px;margin-top:20px}summary{cursor:pointer;color:#dce9f9}table{border-collapse:collapse;width:100%;font-size:13px;margin:12px 0}th,td{padding:10px;text-align:right;border-bottom:1px solid #304259}th:first-child,td:first-child{text-align:left}small{color:#96acc7}a{color:#92dccc}@media(max-width:820px){body{padding:15px}.grid{grid-template-columns:1fr}h1{font-size:22px}canvas{height:290px}.table-wrap{overflow:auto}}
+.details{overflow-wrap:anywhere}.timeline{flex-wrap:wrap}#clock{white-space:nowrap}.controls label{max-width:100%}.controls select{max-width:100%}
+</style>
+<h1>벽 앞 피격 · 네 모드 움직임 비교</h1>
+<p><strong>골격이 실제 기록된 거리만큼 뒤로 이동합니다.</strong> 동일한 벽 간격·고정 카메라에서 네 모드를 동시에 재생합니다.<br>전체 골격은 원본 Joint 포즈에 실측 Mesh 이동을 더한 재구성입니다. 점으로 표시한 발은 게임 실행에서 기록한 위치입니다.</p>
+<div class="controls">
+ <button id="play">▶ 재생</button><button id="reset">처음</button>
+ <label>벽 간격 <select id="gap"></select></label><label>반복 기록 <select id="rep"></select></label>
+ <label>이동 기준 <select id="basis"><option value="actual">실측 이동 (충돌 포함)</option><option value="planned">계획 이동 (충돌 제외)</option></select></label>
+ <label>시점 <select id="view"><option value="oblique">입체 측면</option><option value="side">정측면</option><option value="top">위에서</option></select></label>
+ <label>속도 <select id="speed"><option value="0.25">0.25×</option><option value="0.5" selected>0.5×</option><option value="1">1×</option></select></label>
+ <label><input type="checkbox" id="ghost" checked>시작 포즈</label><label><input type="checkbox" id="feet" checked>실측 발</label>
+</div>
+<div class="timeline"><span id="clock">0.000 s</span><input id="scrub" type="range" min="0" max="1" step="0.001" value="0" aria-label="재생 시간"><label><input type="checkbox" id="loop" checked>반복</label></div>
+<div class="legend"><span><i class="dot" style="background:#70ded0"></i>재구성 골격</span><span><i class="dot" style="background:#faad69"></i>실측 왼발</span><span><i class="dot" style="background:#bd99ff"></i>실측 오른발</span><span>점선: 시작 Capsule 중심 / 반투명 윤곽: 현재 Capsule</span></div>
+<div class="grid" id="panels"></div>
+<p class="note" id="condition"></p>
+<div class="details"><strong>선택한 조건의 거리 기록</strong><div class="table-wrap"><table><thead><tr><th>모드</th><th>실측 최종</th><th>실측 최대 후퇴</th><th>계획 최종</th><th>벽 접촉 프레임</th></tr></thead><tbody id="numbers"></tbody></table></div><small>단위 cm. Capsule 중심의 시작 위치를 0으로 정렬했습니다. 벽 간격은 시작 Capsule 표면부터 벽까지입니다. 계획 최종은 C++가 내보낸 경로이며 실제 충돌·블렌드 결과와 다를 수 있습니다.</small></div>
+<details class="details" open><summary>이 문서가 보여주는 것과 기록의 범위</summary>
+<p>48회 실행 기록: 벽 간격 250 / 80 / 40 / 10cm × 네 모드 × 세 번 반복. 기본 80cm 조건에서는 Uniform과 MultiPhase의 보정 결과를 비교할 수 있습니다. MiddleOnly는 이 조건에서 압축 여유가 부족해 Fallback이 기록되었습니다. 250cm에서는 원본 이동이 유지되고, 40·10cm에서는 보정 모드들이 Fallback으로 돌아갔습니다.</p>
+<p><strong>Fallback은 해당 모드의 보정 성공 결과가 아닙니다.</strong> 실측 재생에는 원본 Root Motion과 CharacterMovement 충돌 처리의 결과가 표시됩니다. 실행되지 않은 보정 움직임은 만들지 않았으며, Fallback의 계획 재생은 비워 둡니다.</p>
+<p>전체 관절은 애니메이션에서 추출한 Root 상대 좌표를 사용하고, 기록된 Montage 시간에 맞춰 보간한 뒤 실측 Mesh 이동을 한 번 더합니다. 따라서 제자리 재생이나 Root 이동의 이중 적용이 아닙니다. 다만 런타임 AnimBP·IK·블렌딩까지 캡처한 전신 모션은 아니므로 골격의 발과 실측 발 점이 일치하지 않을 수 있습니다. Montage 종료 후에는 마지막 원본 포즈를 유지합니다.</p>
+<p>실측 데이터는 최종 블렌드 기준 코드 수정 전에 수집되었습니다. 최신 코드의 검증 결과나 클라이언트 복제 결과로 해석하지 마세요. 이 문서는 기존 서버 실행 기록의 이동 비교이며, 자연스러움 평가는 사용자가 직접 판단합니다.</p>
+<small id="identity"></small>
+</details>
+<script id="replay-data" type="application/json">__DATA__</script>
+<script>
+'use strict';
+const data=JSON.parse(document.getElementById('replay-data').textContent);
+const $=id=>document.getElementById(id), colors=['#9ab9ef','#74dfc5','#e6bc75','#bb9cff'];
+let selected=[], time=0, playing=false, last=performance.now(), duration=1;
+const panels=data.modes.map((mode,i)=>{
+ const el=document.createElement('section');el.className='panel';
+ el.innerHTML=`<div class="heading"><h2 style="color:${colors[i]}">${mode}</h2><span class="status"></span></div><canvas aria-label="${mode} 이동 골격"></canvas><div class="metric"></div>`;
+ $('panels').append(el);return {el,canvas:el.querySelector('canvas'),status:el.querySelector('.status'),metric:el.querySelector('.metric'),color:colors[i]};
+});
+for(const gap of [...new Set(data.tracks.map(t=>t.gap))].sort((a,b)=>b-a))$('gap').add(new Option(`${gap} cm`,gap));
+$('gap').value='80';
+for(const rep of [...new Set(data.tracks.map(t=>t.rep))].sort())$('rep').add(new Option(`${rep+1}회`,rep));
+function interval(values,t,key){let lo=0,hi=values.length-1;while(lo<hi){const m=(lo+hi+1)>>1;if(key(values[m])<=t)lo=m;else hi=m-1;}const j=Math.min(lo+1,values.length-1),a=key(values[lo]),b=key(values[j]);return [lo,j,b>a?Math.max(0,Math.min(1,(t-a)/(b-a))):0];}
+function mix(a,b,f){return a.map((v,i)=>v+(b[i]-v)*f);}
+function observation(track,t){const [i,j,f]=interval(track.samples,t,x=>x.t),a=track.samples[i],b=track.samples[j];return {cap:mix(a.cap,b.cap,f),mesh:mix(a.mesh,b.mesh,f),asset:a.asset+(b.asset-a.asset)*f,feet:a.feet.map((p,k)=>p&&b.feet[k]?mix(p,b.feet[k],f):null),wallHits:a.wallHits};}
+function planned(track,t){const [i,j,f]=interval(track.planned,t,x=>x.t);return mix(track.planned[i].p,track.planned[j].p,f);}
+function pose(t){const [i,j,f]=interval(data.poseTimes,t,x=>x);return data.poses[i].map((p,k)=>mix(p,data.poses[j][k],f));}
+function state(track,t){if($('basis').value==='actual')return observation(track,t);if(track.status==='Fallback')return null;const p=planned(track,Math.min(t,data.duration)),s=track.samples[0];return {cap:mix(s.cap,s.cap,0).map((x,k)=>x+p[k]),mesh:s.mesh.map((x,k)=>x+p[k]),asset:Math.min(t,data.duration),feet:[],wallHits:0};}
+function choose(){selected=data.modes.map(m=>data.tracks.find(t=>t.mode===m&&t.gap===+$('gap').value&&t.rep===+$('rep').value));duration=$('basis').value==='actual'?Math.max(...selected.map(t=>t.samples.at(-1).t)):data.duration;duration+=.35;$('scrub').max=duration;time=0;
+ selected.forEach((t,i)=>{panels[i].status.textContent=t.status==='Fallback'?'Fallback · 원본 + 충돌':t.reason==='Disabled'?'보정 없음':t.reason==='OriginalPreserved'?'원본 유지':'보정 계획 적용';panels[i].status.classList.toggle('fallback',t.status==='Fallback');});
+ $('numbers').innerHTML=selected.map(t=>`<tr><td>${t.mode}</td><td>${t.samples.at(-1).cap[0].toFixed(2)}</td><td>${Math.max(...t.samples.map(s=>s.cap[0])).toFixed(2)}</td><td>${t.status==='Fallback'?'— (계획 불성립)':t.planned.at(-1).p[0].toFixed(2)}</td><td>${t.samples.filter(s=>s.wallHits>0).length}</td></tr>`).join('');
+ $('condition').textContent=`시작 Capsule 반경 ${selected[0].radius}cm · 표면에서 벽까지 ${$('gap').value}cm · 네 화면의 공간 축척과 시간 동일 · 오른쪽이 후퇴 방향 →`;
+ $('identity').textContent=`원본 해시 ${data.sourceHash} · ${data.names.length}개 관절 · trial ${selected.map(t=>t.trial).join(', ')} · 외부 파일/서버 연결 없이 재생`;
+ render();}
+function draw(panel,track,t){const canvas=panel.canvas,w=canvas.clientWidth,h=canvas.clientHeight,dpr=window.devicePixelRatio||1;if(canvas.width!==Math.round(w*dpr)||canvas.height!==Math.round(h*dpr)){canvas.width=Math.round(w*dpr);canvas.height=Math.round(h*dpr);}const c=canvas.getContext('2d');c.setTransform(dpr,0,0,dpr,0,0);c.clearRect(0,0,w,h);
+ const view=$('view').value,extent=Math.max(track.wall+48,210),scale=Math.min((w-46)/(extent+95),(h-58)/235);
+ const project=p=>view==='top'?[25+(p[0]+85)*scale,h/2+p[1]*scale]:[25+(p[0]+85+(view==='oblique'?.32*p[1]:0))*scale,h-36-p[2]*scale-(view==='oblique'?.18*p[1]*scale:0)];
+ const line=(a,b,color,width=1,dash=[])=>{c.strokeStyle=color;c.lineWidth=width;c.setLineDash(dash);c.beginPath();c.moveTo(...project(a));c.lineTo(...project(b));c.stroke();c.setLineDash([]);};
+ c.font='11px system-ui';c.fillStyle='#8199b6';
+ for(let x=-50;x<=extent;x+=50){line([x,-50,0],[x,50,0],'#263d52');const p=project([x,0,0]);c.fillText(`${x}`,p[0]-8,view==='top'?h-13:p[1]+23);}
+ line([-70,0,0],[extent,0,0],'#54718c');line([0,0,0],[0,0,210],'#7288a5',1,[4,5]);
+ const wall=view==='top'?[[track.wall,-65,0],[track.wall+12,-65,0],[track.wall+12,65,0],[track.wall,65,0]]:[[track.wall,-45,0],[track.wall,45,0],[track.wall,45,210],[track.wall,-45,210]];
+ c.fillStyle='#ad775633';c.strokeStyle='#c59169';c.beginPath();wall.forEach((p,i)=>{const xy=project(p);i?c.lineTo(...xy):c.moveTo(...xy);});c.closePath();c.fill();c.stroke();
+ if(view==='side')line([track.wall,0,0],[track.wall,0,210],'#c59169',5);
+ const wp=project([track.wall,0,215]);c.fillStyle='#efc8a6';c.fillText('벽',wp[0]-7,Math.max(18,wp[1]));
+ const s=state(track,t);
+ function skeleton(points,base,alpha,color){c.globalAlpha=alpha;for(const [a,b]of data.edges)line(points[a].map((x,k)=>x+base[k]),points[b].map((x,k)=>x+base[k]),color,2.8);for(let i=0;i<points.length;i++){if(data.names[i]==='root')continue;const p=project(points[i].map((x,k)=>x+base[k]));c.fillStyle=color;c.beginPath();c.arc(...p,data.names[i]==='head'?6:2.2,0,Math.PI*2);c.fill();}c.globalAlpha=1;}
+ if($('ghost').checked)skeleton(pose(0),track.samples[0].mesh,.18,'#c3d4ec');
+ if(!s){panel.metric.innerHTML='보정 계획 불성립 · 실측 이동으로 전환하면 실행 결과를 볼 수 있습니다.';c.fillStyle='#ffce86';c.font='13px system-ui';c.fillText('실행 가능한 보정 경로 없음',24,30);return;}
+ const path=$('basis').value==='actual'?track.samples.map(v=>v.cap):track.planned.map(v=>[v.p[0],v.p[1],s.cap[2]]);for(let i=1;i<path.length;i++)line([path[i-1][0],path[i-1][1],1],[path[i][0],path[i][1],1],panel.color+'66',2);
+ c.strokeStyle=panel.color+'66';c.lineWidth=1.2;const cp=project(s.cap);
+ if(view==='top'){c.beginPath();c.arc(...cp,track.radius*scale,0,2*Math.PI);c.stroke();}else{const a=project([s.cap[0]-track.radius,s.cap[1],s.cap[2]+track.half]);c.beginPath();c.roundRect(a[0],a[1],track.radius*2*scale,track.half*2*scale,track.radius*scale);c.stroke();}
+ skeleton(pose(s.asset),s.mesh,1,panel.color);
+ if($('feet').checked&&$('basis').value==='actual')s.feet.forEach((p,i)=>{if(!p)return;c.fillStyle=i?'#bd99ff':'#faad69';c.beginPath();c.arc(...project(p),4,0,2*Math.PI);c.fill();});
+ const remain=track.wall-track.radius-s.cap[0];
+ const off=state(selected[0],t),reduction=off?off.cap[0]-s.cap[0]:0;
+ panel.metric.innerHTML=`현재 후퇴 <b>${s.cap[0].toFixed(1)} cm</b> &nbsp; 벽 여유 ${remain.toFixed(1)} cm<br>Off 대비 후퇴 감소 ${reduction.toFixed(1)} cm · 포즈 ${s.asset.toFixed(3)} s<br>${$('basis').value==='planned'?'충돌 제외 계획':s.wallHits?'현재 프레임: 벽 접촉 있음':'현재 프레임: 벽 접촉 없음'}`;
+ // Expose only displayed measurements for browser QA and downstream document reuse.
+ panel.canvas.dataset.retreat=s.cap[0];panel.canvas.dataset.wall=track.wall;panel.canvas.dataset.asset=s.asset;
+}
+function render(){$('clock').textContent=`${time.toFixed(3)} / ${duration.toFixed(3)} s`;$('scrub').value=time;selected.forEach((t,i)=>draw(panels[i],t,time));}
+$('play').onclick=()=>{playing=!playing;$('play').textContent=playing?'Ⅱ 일시정지':'▶ 재생';last=performance.now();};
+$('reset').onclick=()=>{time=0;render();};$('scrub').oninput=()=>{time=+$('scrub').value;render();};
+for(const id of ['gap','rep','basis'])$(id).onchange=choose;
+for(const id of ['view','ghost','feet'])$(id).onchange=render;
+window.addEventListener('resize',render);
+function tick(now){if(playing){time+=(now-last)/1000*+$('speed').value;if(time>duration){if($('loop').checked)time%=duration;else{time=duration;playing=false;$('play').textContent='▶ 재생';}}render();}last=now;requestAnimationFrame(tick);}
+choose();requestAnimationFrame(tick);
+</script></html>

@@ -2,10 +2,13 @@
 
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
+#include "Combat/Reaction/ReactionWarpPlan.h"
 #include "HitWallProbeSubsystem.generated.h"
 
 class ACharacter;
 class APawn;
+class APlayerController;
+class ACameraActor;
 
 /**
  * 1) Attaches a UHitWallProbeComponent to every Character that owns a UHitReactionComponent,
@@ -32,6 +35,13 @@ public:
 		float StandoffCm = 200.f;  // player centre to enemy centre
 		float SettleSeconds = 0.6f;
 		float TailSeconds = 0.8f;
+        bool bTour = false;
+        bool bAudit = false;
+        bool bIncludeDisabled = false;
+        bool bCamera = true;
+        bool bMultiPhaseCompare = false;
+        bool bAllowDraft = false;
+        TArray<EReactionWarpMode> PlanModes;
 	};
 
 	/**
@@ -41,7 +51,9 @@ public:
 	 */
 	bool StartRun(const FRunConfig& Config, bool bStations, FString& OutMessage);
 	void StopRun(const TCHAR* Reason);
+    void PauseTour(bool bPause) { bTourPaused = bPause; }
 	bool IsRunning() const { return Phase != EPhase::Idle; }
+    const FString& GetWarpTaskDirectory() const { return WarpTaskDirectory; }
 
 protected:
 	virtual bool DoesSupportWorldType(const EWorldType::Type WorldType) const override;
@@ -52,6 +64,7 @@ private:
 	void TickRun();
 	void PlaceForTrial();
 	void SetWarp(bool bOn) const;
+    void RecordWarpTrial(const FString& Status, const FString& Reason);
 
 	FDelegateHandle SpawnHandle;
 	FString SessionStamp;
@@ -64,10 +77,19 @@ private:
 		FString Name;
 		FVector Anchor = FVector::ZeroVector;   // enemy capsule centre at the station
 		FVector Back = FVector::ForwardVector;  // retreat direction, toward the obstacle
-		double WallDistance = 0.0;              // capsule travel from Anchor until it touches the obstacle
+		FString Error;
+        FVector Normal = FVector::ZeroVector;
+        FString Obstacle;
+        double WallDistance = 0.0;              // capsule travel from Anchor until it touches the obstacle
 	};
 	bool MeasureStation(UWorld& World, ACharacter& Target, APawn& PlayerPawn, FStation& Station, double MaxGap, FString& OutWhy) const;
 	TArray<FStation> Stations;
+    bool bTourPaused = false;
+    FString PlacementError;
+    TWeakObjectPtr<APlayerController> ViewController;
+    TWeakObjectPtr<AActor> OriginalViewTarget;
+    TWeakObjectPtr<ACameraActor> TourCamera;
+    bool bInputLocked = false;
 	EPhase Phase = EPhase::Idle;
 	TArray<FTrial> Trials;
 	int32 TrialIndex = -1;
@@ -78,4 +100,13 @@ private:
 	TWeakObjectPtr<APawn> Player;
 	bool bOriginalWarp = false;
 	FTimerHandle RunTimer;
+    FString WarpTaskDirectory;
+    TArray<FString> WarpTrialRows;
+    bool bTrialRecorded = false;
+    EReactionWarpMode OriginalMode = EReactionWarpMode::Legacy;
+    bool bOriginalDraft = false;
+    FTransform OriginalEnemyTransform, OriginalPlayerTransform;
+    FString OriginalLabel;
+    int32 OriginalProbe = 0;
+    float OriginalFPS = 0.f;
 };
