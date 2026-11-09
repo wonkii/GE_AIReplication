@@ -20,11 +20,14 @@ class FReactionEnvironmentVisualizer final : public FComponentVisualizer
     void DrawVisualization(const UActorComponent* Component, const FSceneView* View,
         FPrimitiveDrawInterface* PDI) override
     {
-        const auto* Environment = CastChecked<UReactionEnvironmentComponent>(Component);
-        const auto* Character = Cast<ACharacter>(Environment->GetOwner());
-        if (!Character || !Environment->bDrawDebug) return;
+        const auto* Environment = Cast<UReactionEnvironmentComponent>(Component);
+        if (!IsValid(Environment) || !Environment->bDrawDebug) return;
 
-        const FVector Center = Character->GetCapsuleComponent()->GetComponentLocation();
+        const auto* Character = Cast<ACharacter>(Environment->GetOwner());
+        const auto* Capsule = IsValid(Character) ? Character->GetCapsuleComponent() : nullptr;
+        if (!IsValid(Capsule)) return;
+
+        const FVector Center = Capsule->GetComponentLocation();
         const FVector Height(0., 0., Environment->DetectionHalfHeightCm);
         const FLinearColor Color(FColor::Cyan);
         constexpr int32 Sides = 32;
