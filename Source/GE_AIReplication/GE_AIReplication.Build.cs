@@ -25,12 +25,13 @@ public class GE_AIReplication : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[] {
 			"Json",
-			"JsonUtilities"
+			"JsonUtilities",
+			"MotionWarping"
 		});
 
 		if (Target.bBuildEditor)
 		{
-			PrivateDependencyModuleNames.Add("UnrealEd"); // Editor placement transactions only.
+			PrivateDependencyModuleNames.AddRange(new string[] { "UnrealEd", "AnimGraph", "BlueprintGraph", "KismetCompiler" });
 		}
 
 		PublicIncludePaths.AddRange(new string[] {

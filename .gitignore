@@ -4,6 +4,9 @@ DerivedDataCache/
 Intermediate/
 Saved/
 
+# Unreal-generated file-open order logs; keep shared Build resources trackable.
+/Build/Windows/FileOpenOrder/
+
 # Local IDE state and generated solutions.
 .vscode/
 .vs/

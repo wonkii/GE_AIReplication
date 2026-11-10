@@ -1,4 +1,5 @@
 #include "SharpImpulseVolume.h"
+#include "Combat/HitReactionComponent.h"
 #include "SharpSplinePath.h"
 #include "../Enemy/SharpEnemyCharacter.h"
 #include "../Experiment/SharpEnemyExperimentComponent.h"
@@ -67,7 +68,7 @@ void ASharpImpulseVolume::OnBeginOverlap(UPrimitiveComponent* Component, AActor*
 	int32 BodyIndex, bool bFromSweep, const FHitResult& Hit)
 {
 	ASharpEnemyCharacter* Enemy = Cast<ASharpEnemyCharacter>(Actor);
-	if (!HasAuthority() || !Enemy || OtherComponent != Enemy->GetCapsuleComponent()) { return; }
+	if (!HasAuthority() || !Enemy || OtherComponent != Enemy->GetCapsuleComponent() || Enemy->HitReaction->IsReacting()) { return; }
 	FTriggerState* State = States.Find(Enemy);
 	if (!State || State->Generation != Enemy->Experiment->Status.Generation || !Enemy->Experiment->IsExecuting() ||
 		!AppliesTo(Enemy->Experiment->GetManager()) || State->bInside) { return; }

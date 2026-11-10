@@ -1,0 +1,27 @@
+{
+  "groups": {
+    "torso": ["pelvis", "spine_01", "spine_02", "spine_03", "head"],
+    "left_arm": ["upperarm_l", "lowerarm_l", "hand_l"],
+    "right_arm": ["upperarm_r", "lowerarm_r", "hand_r"],
+    "left_leg": ["thigh_l", "calf_l", "foot_l", "ball_l"],
+    "right_leg": ["thigh_r", "calf_r", "foot_r", "ball_r"]
+  },
+  "feet": ["foot_l", "foot_r"],
+  "model": "rbf",
+  "penalty": 3.0,
+  "min_duration": 0.10,
+  "smooth_samples": 3,
+  "linear_scale_cm_s": 100.0,
+  "angular_scale_rad_s": 2.0,
+  "linear_noise_cm_s": 0.5,
+  "angular_noise_rad_s": 0.02,
+  "low_motion_speed_cm_s": 5.0,
+  "low_motion_angular_speed_rad_s": 0.1,
+  "contact_height_cm": 3.0,
+  "contact_speed_cm_s": 8.0,
+  "moving_speed_cm_s": 5.0,
+  "warp_min_distance_cm": 1.0,
+  "warp_vertical_tolerance_cm": 0.1,
+  "warp_lateral_tolerance_cm": 0.1,
+  "warp_rotation_tolerance_rad": 0.0002
+}
