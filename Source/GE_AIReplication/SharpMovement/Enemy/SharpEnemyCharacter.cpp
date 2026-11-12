@@ -1,8 +1,13 @@
 #include "SharpEnemyCharacter.h"
 #include "SharpEnemyAIController.h"
+#include "../Experiment/SharpExperimentManager.h"
+#include "../Experiment/SharpExperimentSettings.h"
+#include "EngineUtils.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "../Experiment/SharpEnemyExperimentComponent.h"
 #include "../Measurement/SharpMovementDiagnosticsComponent.h"
 #include "../Movement/SharpSplineFollowerComponent.h"
+#include "../Movement/SharpRandomWalkerComponent.h"
 #include "../Net/SharpSnapshotChannelComponent.h"
 #include "../Net/SharpUpdatePolicy.h"
 #include "../Detector/SharpMovementDetectorComponent.h"
@@ -31,6 +36,7 @@ ASharpEnemyCharacter::ASharpEnemyCharacter(const FObjectInitializer& ObjectIniti
 	CombatAdapter = CreateDefaultSubobject<USharpCombatAdapterComponent>(TEXT("CombatAdapter"));
 	UpdatePolicy = CreateDefaultSubobject<USharpUpdatePolicy>(TEXT("SharpUpdatePolicy"));
 	SplineFollower = CreateDefaultSubobject<USharpSplineFollowerComponent>(TEXT("SplineFollower"));
+	RandomWalker = CreateDefaultSubobject<USharpRandomWalkerComponent>(TEXT("RandomWalker"));
 	Experiment = CreateDefaultSubobject<USharpEnemyExperimentComponent>(TEXT("Experiment"));
 	Diagnostics = CreateDefaultSubobject<USharpMovementDiagnosticsComponent>(TEXT("Diagnostics"));
 	SnapshotChannel = CreateDefaultSubobject<USharpSnapshotChannelComponent>(TEXT("SnapshotChannel"));
@@ -44,11 +50,19 @@ void ASharpEnemyCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>&
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(ASharpEnemyCharacter, ExperimentActorId);
+	DOREPLIFETIME(ASharpEnemyCharacter, ExperimentMovementSource);
 }
 
 void ASharpEnemyCharacter::BeginPlay()
 {
 	Super::BeginPlay();
+	// A replicated enemy may appear after Manager::BeginPlay/OnRep. Read the
+	// latest resolved profile when this character starts, as well.
+	for (TActorIterator<ASharpExperimentManager> It(GetWorld()); It; ++It)
+	{
+		ApplyOptimizationProfile(**It);
+		break; // One experiment Manager per world.
+	}
 	const UCharacterMovementComponent* Movement = GetCharacterMovement();
 	const TCHAR* Mode = GetNetMode() == NM_Client ? TEXT("Client") :
 		GetNetMode() == NM_DedicatedServer ? TEXT("DedicatedServer") :
@@ -61,6 +75,16 @@ void ASharpEnemyCharacter::BeginPlay()
 
 void ASharpEnemyCharacter::OnRep_ReplicatedMovement()
 {
+    // In-flight normal movement from the previous mode must never correct an
+    // event-owned capsule. Mode/status replication can arrive in either order.
+    if (Experiment && Experiment->Status.Generation > 0 &&
+        (Experiment->Status.State == ESharpEnemyTrialState::Running || Experiment->Status.State == ESharpEnemyTrialState::Suspended) &&
+        (Experiment->Status.Identity.Mode == ESharpExperimentMode::EventOnly ||
+         Experiment->Status.Identity.Mode == ESharpExperimentMode::EventPredictor))
+    {
+        if (Recorder) { Recorder->RecordDiagnostic(TEXT("FRepMovementIgnored"), 0, 0, 0, 0, TEXT("EventTransportOwnsCapsule")); }
+        return;
+    }
 	const FRepMovement Received = GetReplicatedMovement();
 	const FVector BeforePosition = GetActorLocation();
 	const FVector BeforeVelocity = GetVelocity();

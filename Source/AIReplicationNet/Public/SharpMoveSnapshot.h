@@ -15,16 +15,25 @@ enum class ESharpPredictionType : uint8
     Airborne = 2 UMETA(DisplayName = "Airborne")
 };
 
-// M5/M6: 실제 서버 Detector 사건에서 생성할 단일 복제 Snapshot 계약.
+UENUM(BlueprintType)
+enum class ESharpSnapshotKind : uint8
+{
+    DetectorEvent = 0,
+    InitialState = 1,
+    RecoveryKeyframe = 2
+};
+
+// M5/M6: 서버 Detector 사건 및 recovery keyframe의 단일 복제 Snapshot 계약.
 // 이 파일은 데이터 타입만 정의한다.
 // RepNotify, DOREPLIFETIME, ForceNetUpdate, Predictor 적용은 여기서 수행하지 않는다.
-// 기본 ACharacter/CMC Movement Replication을 대체하지 않는다.
+// Event modes transmit these authoritative anchor states instead of FRepMovement.
+// Snapshot is a latest-state replicated property, NOT a reliable ordered event queue.
 USTRUCT(BlueprintType)
 struct AIREPLICATIONNET_API FSharpMoveSnapshot
 {
     GENERATED_BODY()
 
-    // Detector가 Enemy별로 발급하는 단조 증가 사건 번호.
+    // Detector가 Enemy별로 발급하는 단조 증가 상태 번호(이벤트와 keyframe 공통).
     // 0은 아직 유효한 사건이 없는 초기 상태다.
     // Network Policy나 Snapshot이 자체적으로 번호를 생성하지 않는다.
     UPROPERTY()
@@ -48,6 +57,13 @@ struct AIREPLICATIONNET_API FSharpMoveSnapshot
     UPROPERTY()
     FVector StartPosition = FVector::ZeroVector;
 
+    // Event movement transport must also restore server orientation.
+    UPROPERTY()
+    FRotator StartRotation = FRotator::ZeroRotator;
+
+    UPROPERTY()
+    ESharpSnapshotKind Kind = ESharpSnapshotKind::DetectorEvent;
+
     // 사건 적용 후 서버 CMC에서 관찰된 속도 (cm/s).
     // Raw Impulse를 보내거나 클라이언트에서 Impulse를 재적용하지 않는다.
     UPROPERTY()
@@ -63,7 +79,7 @@ struct AIREPLICATIONNET_API FSharpMoveSnapshot
     UPROPERTY()
     uint8 MovementMode = 0;
 
-    // Client visual prediction model; basic CMC replication remains authoritative.
+    // Client extrapolation model; event modes own the simulated proxy capsule.
     // Both event modes use identical server transmission rules.
     UPROPERTY()
     ESharpPredictionType PredictionType = ESharpPredictionType::None;

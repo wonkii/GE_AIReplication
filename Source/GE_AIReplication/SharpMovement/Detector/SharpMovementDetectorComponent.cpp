@@ -4,6 +4,7 @@
 #include "../Experiment/SharpExperimentSettings.h"
 #include "../Measurement/SharpMovementRecorderComponent.h"
 #include "../Net/SharpDetectorNetworkBridge.h"
+#include "../Net/SharpUpdatePolicy.h"
 #include "Engine/World.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "HAL/PlatformTime.h"
@@ -36,6 +37,52 @@ void USharpMovementDetectorComponent::Stop()
 	bObserving = false; Classifier.Reset();
 }
 
+bool USharpMovementDetectorComponent::BuildSnapshot(const FSharpMovementSample& Observed, FSharpMoveSnapshot& Event)
+{
+    if (!Enemy || !Enemy->HasAuthority() || !bObserving || !Enemy->Experiment->IsObservingMovement()) { return false; }
+    if (Sequence == MAX_uint32)
+    {
+        Enemy->Experiment->Fail(TEXT("Detector/state sequence exhausted; start a new world"));
+        return false;
+    }
+    Event.SequenceId = ++Sequence;
+    Event.Generation = Enemy->Experiment->Status.Generation;
+    Event.Segment = Enemy->Experiment->Status.Segment;
+    Event.ServerTime = Observed.ServerTime;
+    Event.StartPosition = Observed.Position;
+    Event.StartRotation = Enemy->GetActorRotation();
+    Event.PostVelocity = Observed.Velocity;
+    Event.MovementMode = Observed.MovementMode;
+    Event.CustomMovementMode = Observed.CustomMode;
+    Event.Gravity = FVector(0, 0, Enemy->GetCharacterMovement()->GetGravityZ());
+    if (Observed.MovementMode == MOVE_Walking || Observed.MovementMode == MOVE_NavWalking)
+    {
+        Event.PredictionType = ESharpPredictionType::ConstantVelocity;
+    }
+    else if (Observed.MovementMode == MOVE_Falling && bAirborneModel)
+    {
+        Event.PredictionType = ESharpPredictionType::Airborne;
+    }
+    return true;
+}
+
+bool USharpMovementDetectorComponent::PublishStateKeyframe(bool bInitial)
+{
+    if (!Enemy || !Enemy->HasAuthority() || !bObserving || !Enemy->UpdatePolicy || !Enemy->UpdatePolicy->IsPolicyInitialized())
+    {
+        return false;
+    }
+    const ESharpExperimentMode Mode = Enemy->UpdatePolicy->GetActiveMode();
+    if (Mode != ESharpExperimentMode::EventOnly && Mode != ESharpExperimentMode::EventPredictor) { return false; }
+    FSharpMoveSnapshot State;
+    if (!BuildSnapshot(Sample(), State)) { return false; }
+    State.Kind = bInitial ? ESharpSnapshotKind::InitialState : ESharpSnapshotKind::RecoveryKeyframe;
+    const bool bSent = Enemy->PublishDetectedSharpMoveSnapshot(State);
+    Enemy->Recorder->RecordDiagnostic(bInitial ? TEXT("EventInitialPublish") : TEXT("EventRecoveryPublish"),
+        State.SequenceId, State.ServerTime, bSent ? 1.0 : 0.0, 0, bSent ? TEXT("Accepted") : TEXT("Rejected"));
+    return bSent;
+}
+
 void USharpMovementDetectorComponent::ObserveMovement(float DeltaSeconds, FVector OldLocation, FVector OldVelocity)
 {
 	if (!bObserving || !Enemy || !Enemy->HasAuthority() || !Enemy->Experiment->IsObservingMovement()) { return; }
@@ -46,19 +93,12 @@ void USharpMovementDetectorComponent::ObserveMovement(float DeltaSeconds, FVecto
 	FString Route = TEXT("NoEvent");
 	if (Result.bSharpEvent)
 	{
-		// Lifetime sequences remain monotonic across resets; exhaustion fails explicitly.
-		if (Sequence == MAX_uint32) { Enemy->Experiment->Fail(TEXT("Detector sequence exhausted; start a new world")); return; }
-		FSharpMoveSnapshot Event;
-		Event.SequenceId = ++Sequence; Event.Generation = Enemy->Experiment->Status.Generation; Event.Segment = Enemy->Experiment->Status.Segment;
-		Event.ServerTime = Observed.ServerTime; Event.StartPosition = Observed.Position; Event.PostVelocity = Observed.Velocity;
-		Event.MovementMode = Observed.MovementMode; Event.CustomMovementMode = Observed.CustomMode;
-		Event.Gravity = FVector(0, 0, Enemy->GetCharacterMovement()->GetGravityZ());
-		// EventOnly and EventPredictor send identical movement payloads. Only client presentation differs.
-		if (Observed.MovementMode == MOVE_Walking || Observed.MovementMode == MOVE_NavWalking) { Event.PredictionType = ESharpPredictionType::ConstantVelocity; }
-		else if (Observed.MovementMode == MOVE_Falling && bAirborneModel) { Event.PredictionType = ESharpPredictionType::Airborne; }
-		const ESharpDetectorNetworkDispatchResult Dispatch = FSharpDetectorNetworkBridge::DispatchDetectedEvent(Enemy, Event);
-		Route = Dispatch == ESharpDetectorNetworkDispatchResult::Requested ? TEXT("Requested") :
-			Dispatch == ESharpDetectorNetworkDispatchResult::BaselineSkipped ? TEXT("BaselineSkipped") : TEXT("Rejected");
+        FSharpMoveSnapshot Event;
+        if (!BuildSnapshot(Observed, Event)) { return; }
+        Event.Kind = ESharpSnapshotKind::DetectorEvent;
+        const ESharpDetectorNetworkDispatchResult Dispatch = FSharpDetectorNetworkBridge::DispatchDetectedEvent(Enemy, Event);
+        Route = Dispatch == ESharpDetectorNetworkDispatchResult::Requested ? TEXT("Requested") :
+            Dispatch == ESharpDetectorNetworkDispatchResult::BaselineSkipped ? TEXT("BaselineSkipped") : TEXT("Rejected");
 	}
 	Enemy->Recorder->RecordDetection(Sequence, Result, Cost, Route);
 }

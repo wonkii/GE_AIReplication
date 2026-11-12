@@ -17,13 +17,19 @@ class GE_AIREPLICATION_API USharpMovementRecorderComponent : public UActorCompon
 public:
 	USharpMovementRecorderComponent();
 	void HandleSessionChanged();
+	void SetIdleTickOptimizationEnabled(bool bEnabled);
 	void Finish(const FString& Reason);
 	void RecordDiagnostic(const FString& Kind, uint32 Sequence, double SourceTime, double Value, double CostMicroseconds, const FString& Reason);
+	void RecordRandomWalkCommand(int32 SegmentIndex, const FString& Command, float Value, float Yaw);
+    // Dedicated wall/bounds data stream; ordinary movement_commands.csv stays compatible.
+    void RecordRandomWalkAvoidance(int32 SegmentIndex, const FString& Kind,
+        int32 Attempt, float SignedAngle, float TargetYaw);
 	void RecordDetection(uint32 Sequence, const FSharpClassification& Result, double CostMicroseconds, const FString& Route);
 	uint32 BeginImpulse(FName VolumeId, const FVector& WorldImpulse, bool bVelocityChange, bool bIsSharpEvent);
 	void CompleteImpulse(uint32 EventId);
 	void ObserveForceApplication();
 	void ObserveReceipt(double SourceTime);
+	void ObserveEventReceipt(double SourceTime, uint32 Sequence);
 	bool IsRecording() const { return bRecording; }
 protected:
 	virtual void BeginPlay() override;
@@ -37,6 +43,9 @@ private:
 	int32 RecordedActorId = 0;
 	bool bVisualLoggerLease = false;
 	bool bRecording = false;
+	bool bOptimizeIdleTick = false;
+	float BaselineTickInterval = 0.0f;
+	void RefreshTickScheduling();
 	int32 ClosedGeneration = 0, ClosedSegment = 0;
 	uint32 NextEventId = 0;
 	uint64 ReceiptCount = 0;

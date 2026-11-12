@@ -3,10 +3,13 @@
 #include "../Experiment/SharpEnemyExperimentComponent.h"
 #include "../Experiment/SharpExperimentSettings.h"
 #include "../Movement/SharpSplineFollowerComponent.h"
+#include "../Movement/SharpRandomWalkerComponent.h"
 #include "../Scenario/SharpSplinePath.h"
 #include "../Scenario/SharpImpulseVolume.h"
+#include "../Experiment/SharpExperimentManager.h"
 #include "Components/BoxComponent.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Engine/World.h"
 #include "Engine/NetDriver.h"
 #include "EngineUtils.h"
@@ -28,7 +31,14 @@ void USharpMovementRecorderComponent::WriteManifest(const FString& Outcome)
 	Json->SetNumberField(TEXT("ActorId"), RecordedActorId); Json->SetNumberField(TEXT("Generation"), Context.Generation);
 	Json->SetNumberField(TEXT("Segment"), Context.Segment); Json->SetStringField(TEXT("PathId"), Context.PathId.ToString());
 	Json->SetNumberField(TEXT("PathRevision"), Context.PathRevision);
+	Json->SetStringField(TEXT("MovementSource"), StaticEnum<ESharpEnemyMovementSource>()->GetNameStringByValue(static_cast<int64>(Context.MovementSource)));
 	Json->SetStringField(TEXT("Mode"), StaticEnum<ESharpExperimentMode>()->GetNameStringByValue(static_cast<int64>(Context.Identity.Mode)));
+    Json->SetStringField(TEXT("MovementTransport"),
+        Context.Identity.Mode == ESharpExperimentMode::EventOnly || Context.Identity.Mode == ESharpExperimentMode::EventPredictor
+        ? TEXT("EventStateChannel_NoFRepMovement") : TEXT("UnrealCharacterMovement"));
+	Json->SetStringField(TEXT("OptimizationProfile"),
+		StaticEnum<ESharpExperimentOptimizationPreset>()->GetNameStringByValue(static_cast<int64>(Enemy->GetOptimizationProfile())));
+	Json->SetBoolField(TEXT("AnimationUROEnabled"), Enemy->GetMesh()->bEnableUpdateRateOptimizations);
 	Json->SetStringField(TEXT("Outcome"), Outcome); Json->SetStringField(TEXT("State"), UEnum::GetValueAsString(Context.State));
 	Json->SetBoolField(TEXT("Healthy"), Files.IsHealthy());
 	Json->SetNumberField(TEXT("ServerStartTime"), Context.SegmentStartTime); Json->SetNumberField(TEXT("ServerEndTime"), Context.ServerEndTime);
@@ -54,6 +64,11 @@ void USharpMovementRecorderComponent::WriteManifest(const FString& Outcome)
 		Json->SetNumberField(TEXT("PathLength"), Path->GetLength());
 		Json->SetObjectField(TEXT("Follow"), FJsonObjectConverter::UStructToJsonObject(Enemy->SplineFollower->GetPreparedSettings()));
 	}
+	else if (Context.MovementSource == ESharpEnemyMovementSource::RandomWalk && Enemy->HasAuthority())
+	{
+		Json->SetObjectField(TEXT("RandomWalk"), FJsonObjectConverter::UStructToJsonObject(Enemy->RandomWalker->GetPreparedSettings()));
+		Json->SetNumberField(TEXT("RandomWalkResolvedSeed"), Enemy->RandomWalker->GetResolvedSeed());
+	}
 	const UCharacterMovementComponent* Movement = Enemy->GetCharacterMovement();
 	TSharedRef<FJsonObject> CMC = MakeShared<FJsonObject>();
 	CMC->SetNumberField(TEXT("MaxAcceleration"), Movement->MaxAcceleration); CMC->SetNumberField(TEXT("GroundFriction"), Movement->GroundFriction);
@@ -66,7 +81,8 @@ void USharpMovementRecorderComponent::WriteManifest(const FString& Outcome)
 	CMC->SetNumberField(TEXT("NetworkMaxSmoothUpdateDistance"), Movement->NetworkMaxSmoothUpdateDistance);
 	CMC->SetNumberField(TEXT("CapsuleRadius"), Enemy->GetCapsuleComponent()->GetScaledCapsuleRadius());
 	CMC->SetNumberField(TEXT("CapsuleHalfHeight"), Enemy->GetCapsuleComponent()->GetScaledCapsuleHalfHeight());
-	CMC->SetNumberField(TEXT("NetUpdateFrequency"), Enemy->GetNetUpdateFrequency()); CMC->SetNumberField(TEXT("MinNetUpdateFrequency"), Enemy->GetMinNetUpdateFrequency());
+	CMC->SetBoolField(TEXT("ReplicateMovementAtManifestWrite"), Enemy->IsReplicatingMovement());
+    CMC->SetNumberField(TEXT("NetUpdateFrequency"), Enemy->GetNetUpdateFrequency()); CMC->SetNumberField(TEXT("MinNetUpdateFrequency"), Enemy->GetMinNetUpdateFrequency());
 	Json->SetObjectField(TEXT("CharacterMovement"), CMC);
 	Json->SetNumberField(TEXT("PreparedNetUpdateFrequency"), Enemy->Experiment->GetPreparedNetFrequency());
 	Json->SetNumberField(TEXT("PreparedMinNetUpdateFrequency"), Enemy->Experiment->GetPreparedMinNetFrequency());
@@ -79,7 +95,21 @@ void USharpMovementRecorderComponent::WriteManifest(const FString& Outcome)
 		Volume->SetStringField(TEXT("Extent"), It->TriggerBox->GetUnscaledBoxExtent().ToString());
 		Volume->SetObjectField(TEXT("Settings"), FJsonObjectConverter::UStructToJsonObject(It->Settings)); Volumes.Add(MakeShared<FJsonValueObject>(Volume));
 	}
-	Json->SetArrayField(TEXT("ImpulseVolumes"), Volumes);
+    Json->SetArrayField(TEXT("ImpulseVolumes"), Volumes);
+    if (const ASharpExperimentManager* Manager = Enemy->Experiment->GetManager())
+    {
+        TSharedRef<FJsonObject> Course = MakeShared<FJsonObject>();
+        Course->SetBoolField(TEXT("Enabled"), Manager->bEnableIntegratedMovementCourse);
+        Course->SetNumberField(TEXT("ObstacleCount"), Manager->IntegratedSpawnedObstacleCount);
+        Course->SetNumberField(TEXT("ObstacleSizeCm"), Manager->IntegratedObstacleSizeCm);
+        Course->SetNumberField(TEXT("ArenaWidthCm"), Manager->RandomWalkArenaSizeCm.X);
+        Course->SetNumberField(TEXT("ArenaHeightCm"), Manager->RandomWalkArenaSizeCm.Y);
+        Course->SetNumberField(TEXT("KnockbackPulseIntervalSeconds"), Manager->IntegratedKnockbackPulseIntervalSeconds);
+        Course->SetNumberField(TEXT("KnockbackActorsPerPulse"), Manager->IntegratedKnockbackActorsPerPulse);
+        Course->SetNumberField(TEXT("KnockbackHorizontalSpeed"), Manager->IntegratedKnockbackHorizontalSpeed);
+        Course->SetNumberField(TEXT("KnockbackUpSpeed"), Manager->IntegratedKnockbackUpSpeed);
+        Json->SetObjectField(TEXT("IntegratedCourse"), Course);
+    }
 	TSharedRef<FJsonObject> Network = MakeShared<FJsonObject>();
 	const TCHAR* Names[] = {TEXT("net.UseAdaptiveNetUpdateFrequency"), TEXT("net.PktLag"), TEXT("net.PktLagMin"), TEXT("net.PktLagMax"),
 		TEXT("net.PktLoss"), TEXT("net.PktIncomingLagMin"), TEXT("net.PktIncomingLagMax"), TEXT("net.PktIncomingLoss"), TEXT("t.MaxFPS")};

@@ -2,6 +2,7 @@
 #include "../Enemy/SharpEnemyCharacter.h"
 #include "../Experiment/SharpEnemyExperimentComponent.h"
 #include "../Prediction/SharpVisualPredictorComponent.h"
+#include "../Net/SharpSnapshotChannelComponent.h"
 #include "Detector/SharpMovementSample.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -31,6 +32,7 @@ USharpMovementRecorderComponent::USharpMovementRecorderComponent()
 void USharpMovementRecorderComponent::BeginPlay()
 {
 	Super::BeginPlay(); Enemy = Cast<ASharpEnemyCharacter>(GetOwner());
+	BaselineTickInterval = PrimaryComponentTick.TickInterval;
 	if (Enemy)
 	{
 		Enemy->OnCharacterMovementUpdated.AddUniqueDynamic(this, &USharpMovementRecorderComponent::ObserveMovement);
@@ -48,6 +50,24 @@ FString USharpMovementRecorderComponent::CommonRow(double ServerTime) const
 		RecordedActorId, Context.Generation, Context.Segment, *FSharpRecordingFiles::Csv(Context.PathId.ToString()),
 		Context.PathRevision, *StaticEnum<ESharpEnemyTrialState>()->GetNameStringByValue(static_cast<int64>(Context.State)),
 		ServerTime, WallSeconds(), static_cast<unsigned long long>(GFrameCounter));
+}
+
+void USharpMovementRecorderComponent::SetIdleTickOptimizationEnabled(bool bEnabled)
+{
+	bOptimizeIdleTick = bEnabled;
+	RefreshTickScheduling();
+}
+
+void USharpMovementRecorderComponent::RefreshTickScheduling()
+{
+	if (!HasBegunPlay()) { return; }
+	// Keep low-frequency polling as a safety net for out-of-order initial
+	// ActorId/Status replication. During recording sample EVERY frame.
+	const float DesiredInterval = bOptimizeIdleTick && !bRecording ? 0.25f : BaselineTickInterval;
+	if (!FMath::IsNearlyEqual(PrimaryComponentTick.TickInterval, DesiredInterval))
+	{
+		SetComponentTickInterval(DesiredInterval);
+	}
 }
 
 void USharpMovementRecorderComponent::HandleSessionChanged()
@@ -77,6 +97,7 @@ void USharpMovementRecorderComponent::HandleSessionChanged()
 		else if (Status.State == ESharpEnemyTrialState::Idle || Status.State == ESharpEnemyTrialState::Ready) { Finish(TEXT("Released")); }
 		else if (TailDeadline < 0) { TailDeadline = GetWorld()->GetTimeSeconds() + Context.Recording.PostTrialObservationSeconds; }
 	}
+	RefreshTickScheduling();
 }
 
 void USharpMovementRecorderComponent::StartRecording()
@@ -90,6 +111,7 @@ void USharpMovementRecorderComponent::StartRecording()
 		ClosedGeneration = Context.Generation; ClosedSegment = Context.Segment; return;
 	}
 	bRecording = true; TailDeadline = -1; FlushTime = GetWorld()->GetTimeSeconds();
+	RefreshTickScheduling();
 	#if ENABLE_VISUAL_LOG
 	if (Context.Recording.bVisualLogger)
 	{
@@ -129,6 +151,13 @@ void USharpMovementRecorderComponent::ObserveReceipt(double SourceTime)
 	RecordDiagnostic(TEXT("MovementReceipt"), 0, SourceTime, 0, 0, TEXT("CMC"));
 }
 
+void USharpMovementRecorderComponent::ObserveEventReceipt(double SourceTime, uint32 Sequence)
+{
+    ++ReceiptCount;
+    LastReceiptSourceTime = SourceTime;
+    RecordDiagnostic(TEXT("EventStateReceipt"), Sequence, SourceTime, 0, 0, TEXT("SnapshotChannel"));
+}
+
 void USharpMovementRecorderComponent::RecordDiagnostic(const FString& Kind, uint32 Sequence, double SourceTime,
 	double Value, double CostMicroseconds, const FString& Reason)
 {
@@ -138,6 +167,34 @@ void USharpMovementRecorderComponent::RecordDiagnostic(const FString& Kind, uint
 	Files.Add(TEXT("diagnostics.csv"), CommonHeader + TEXT(",Kind,SequenceId,SourceTime,Value,CostMicroseconds,Reason"),
 		CommonRow(Time) + FString::Printf(TEXT(",%s,%u,%.9f,%.6f,%.3f,%s"),
 			*FSharpRecordingFiles::Csv(Kind), Sequence, SourceTime, Value, CostMicroseconds, *FSharpRecordingFiles::Csv(Reason)));
+}
+
+void USharpMovementRecorderComponent::RecordRandomWalkCommand(int32 SegmentIndex, const FString& Command,
+	float Value, float Yaw)
+{
+	if (!bRecording || !Enemy || !Enemy->HasAuthority()) { return; }
+	const double Now = GetWorld()->GetTimeSeconds();
+	const FVector Position = Enemy->GetActorLocation();
+	const FVector Velocity = Enemy->GetVelocity();
+	Files.Add(TEXT("movement_commands.csv"),
+		CommonHeader + TEXT(",SegmentIndex,Command,Value,Yaw,PosX,PosY,PosZ,VelX,VelY,VelZ"),
+		CommonRow(Now) + FString::Printf(TEXT(",%d,%s,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f"),
+			SegmentIndex, *FSharpRecordingFiles::Csv(Command), Value, Yaw,
+			Position.X, Position.Y, Position.Z, Velocity.X, Velocity.Y, Velocity.Z));
+}
+
+void USharpMovementRecorderComponent::RecordRandomWalkAvoidance(int32 SegmentIndex,
+    const FString& Kind, int32 Attempt, float SignedAngle, float TargetYaw)
+{
+    if (!bRecording || !Enemy || !Enemy->HasAuthority()) { return; }
+    const FVector P = Enemy->GetActorLocation();
+    const FVector V = Enemy->GetVelocity();
+    Files.Add(TEXT("avoidance_events.csv"),
+        CommonHeader + TEXT(",SegmentIndex,Kind,Attempt,SignedTurnDeg,TargetYaw,PosX,PosY,PosZ,VelX,VelY,VelZ"),
+        CommonRow(GetWorld()->GetTimeSeconds()) + FString::Printf(
+            TEXT(",%d,%s,%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f"),
+            SegmentIndex, *FSharpRecordingFiles::Csv(Kind), Attempt, SignedAngle, TargetYaw,
+            P.X, P.Y, P.Z, V.X, V.Y, V.Z));
 }
 
 void USharpMovementRecorderComponent::RecordDetection(uint32 Sequence, const FSharpClassification& Result,
@@ -224,7 +281,7 @@ void USharpMovementRecorderComponent::TickComponent(float DeltaTime, ELevelTick 
 				CommonHeader + TEXT(",ClientId,CapsuleX,CapsuleY,CapsuleZ,MeshX,MeshY,MeshZ,RawMeshX,RawMeshY,RawMeshZ,UpdateCount,RxStateTime,FrameMs,Predicting"),
 				CommonRow(GameState->GetServerWorldTimeSeconds()) + FString::Printf(TEXT(",%s,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%llu,%.9f,%.3f,%d"),
 					*FSharpRecordingFiles::Csv(ClientId), Capsule.X, Capsule.Y, Capsule.Z, Mesh.X, Mesh.Y, Mesh.Z,
-					RawMesh.X, RawMesh.Y, RawMesh.Z, static_cast<unsigned long long>(ReceiptCount), LastReceiptSourceTime, DeltaTime * 1000, Enemy->VisualPredictor->bPredicting));
+					RawMesh.X, RawMesh.Y, RawMesh.Z, static_cast<unsigned long long>(ReceiptCount), LastReceiptSourceTime, DeltaTime * 1000, (Enemy->SnapshotChannel->IsPredicting() || Enemy->VisualPredictor->bPredicting) ? 1 : 0));
 		}
 	}
 	for (int32 I = PendingImpulses.Num() - 1; I >= 0; --I)
@@ -258,6 +315,7 @@ void USharpMovementRecorderComponent::Finish(const FString& Reason)
 	for (const FPendingImpulse& Event : PendingImpulses) { WriteImpulse(Event, -1, TEXT("Cancelled")); }
 	PendingImpulses.Reset(); Files.Flush(); WriteManifest(Reason); Files.Close(); bRecording = false; TailDeadline = -1;
 	ClosedGeneration = Context.Generation; ClosedSegment = Context.Segment;
+	RefreshTickScheduling();
 	#if ENABLE_VISUAL_LOG
 	if (bVisualLoggerLease)
 	{

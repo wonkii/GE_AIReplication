@@ -6,6 +6,7 @@
 
 void ASharpExperimentManager::CancelAutomaticControl()
 {
+    StopIntegratedKnockback();
 	GetWorldTimerManager().ClearTimer(PreparationTimer);
 	GetWorldTimerManager().ClearTimer(AutoStartTimer);
 	GetWorldTimerManager().ClearTimer(TrialDurationTimer);
@@ -16,7 +17,8 @@ void ASharpExperimentManager::CancelAutomaticControl()
 void ASharpExperimentManager::TryAutomaticPrepare()
 {
 	FString Reason;
-	if (!FSharpExperimentValidation::ValidateRegistry(*this, Reason)) { CancelAutomaticControl(); Reject(Reason); return; }
+    if (!AssignRandomWalkIdentities(Reason) || !FSharpExperimentValidation::ValidateRegistry(*this, Reason))
+    { CancelAutomaticControl(); Reject(Reason); return; }
 	if (!FSharpExperimentValidation::ValidateReadiness(*this, Reason))
 	{
 		if (GetWorld()->GetTimeSeconds() >= PreparationDeadline) { CancelAutomaticControl(); Reject(Reason); }

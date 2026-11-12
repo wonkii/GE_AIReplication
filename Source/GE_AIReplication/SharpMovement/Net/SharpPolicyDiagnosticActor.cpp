@@ -124,6 +124,17 @@ void ASharpPolicyDiagnosticActor::TryStartTest()
             return;
         }
 
+        // Event transport now multiplexes initial/recovery keys with Detector
+        // events through ONE monotonic sequence allocator. This legacy test
+        // injects hard-coded 1/2 and would corrupt an actual live trial.
+        if (Mode == ESharpExperimentMode::EventOnly || Mode == ESharpExperimentMode::EventPredictor)
+        {
+            UE_LOG(LogSharpPolicyDiagnostic, Warning,
+                TEXT("[M5][Diag] EventModeSyntheticTestDisabled ActorId=%d Reason=SharedMonotonicSequenceUseLiveBatchAndDiagnostics"), TargetActorId);
+            GetWorldTimerManager().ClearTimer(FindPolicyTimerHandle);
+            bStarted = true;
+            return;
+        }
         TargetEnemy = Candidate;
         TargetPolicy = CandidatePolicy;
         BaselineHz = Candidate->GetNetUpdateFrequency();

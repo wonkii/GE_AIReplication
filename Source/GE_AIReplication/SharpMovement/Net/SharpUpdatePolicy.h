@@ -81,6 +81,11 @@ private:
     UPROPERTY(Transient)
     bool bHasSavedMinNetUpdateFrequency = false;
 
+    // Event transport disables normal ACharacter FRepMovement on the server.
+    // Actor and component property replication remain enabled.
+    bool bSavedReplicateMovement = true;
+    bool bHasSavedReplicateMovement = false;
+
     // 실제 Detector가 발급한 마지막으로 처리한 사건 번호.
     // 0은 아직 처리한 사건이 없다는 뜻이다. 이번 버전에서는 wrap-around 미지원.
     UPROPERTY(Transient)

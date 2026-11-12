@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "../Measurement/SharpRecordingSettings.h"
 #include "../Prediction/SharpVisualPredictionSettings.h"
+#include "../Movement/SharpRandomWalkTypes.h"
 #include "SharpExperimentTypes.generated.h"
 
 UENUM(BlueprintType)
@@ -46,6 +47,8 @@ struct FSharpEnemyTrialStatus
 {
 	GENERATED_BODY()
 	UPROPERTY(BlueprintReadOnly) FSharpExperimentIdentity Identity;
+	UPROPERTY(BlueprintReadOnly) ESharpEnemyMovementSource MovementSource = ESharpEnemyMovementSource::Spline;
+	// RandomWalk uses a stable virtual PathId RW_<ActorId> (no Spline asset).
 	UPROPERTY(BlueprintReadOnly) FName PathId;
 	UPROPERTY(BlueprintReadOnly) int32 PathRevision = 0;
 	UPROPERTY(BlueprintReadOnly) int32 Generation = 0;

@@ -3,10 +3,14 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
 #include "SharpMoveSnapshot.h"
+#include "../Movement/SharpRandomWalkTypes.h"
 #include "SharpEnemyCharacter.generated.h"
 
 class USharpUpdatePolicy;
+class ASharpExperimentManager;
+enum class ESharpExperimentOptimizationPreset : uint8;
 class USharpSplineFollowerComponent;
+class USharpRandomWalkerComponent;
 class USharpEnemyExperimentComponent;
 class USharpMovementDiagnosticsComponent;
 class USharpSnapshotChannelComponent;
@@ -30,8 +34,13 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Combat") TObjectPtr<USharpCombatAdapterComponent> CombatAdapter;
 	UPROPERTY(EditInstanceOnly, Replicated, BlueprintReadOnly, Category="Sharp Experiment|Identity", meta=(ClampMin="1"))
 	int32 ExperimentActorId = 0;
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Sharp Enemy")
+	// Set RandomWalk for Enemies listed in ExperimentManager.RandomWalkEnemies.
+	UPROPERTY(EditInstanceOnly, Replicated, BlueprintReadOnly, Category="Sharp Enemy|Movement")
+	ESharpEnemyMovementSource ExperimentMovementSource = ESharpEnemyMovementSource::Spline;
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Sharp Enemy|Movement")
 	TObjectPtr<USharpSplineFollowerComponent> SplineFollower;
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Sharp Enemy|Movement")
+	TObjectPtr<USharpRandomWalkerComponent> RandomWalker;
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Sharp Enemy")
 	TObjectPtr<USharpEnemyExperimentComponent> Experiment;
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Sharp Enemy")
@@ -43,10 +52,20 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Sharp Enemy") TObjectPtr<USharpMovementDetectorComponent> Detector;
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Sharp Enemy") TObjectPtr<USharpMovementRecorderComponent> Recorder;
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Sharp Enemy") TObjectPtr<USharpVisualPredictorComponent> VisualPredictor;
+	// Applied by the level Manager (and again on replicated client spawn).
+	void ApplyOptimizationProfile(const ASharpExperimentManager& Manager);
+	ESharpExperimentOptimizationPreset GetOptimizationProfile() const;
 	// Retained detector API; capture Generation and Segment at observation time.
 	bool PublishDetectedSharpMoveSnapshot(const FSharpMoveSnapshot& Snapshot);
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 protected:
+	bool bOptimizationDefaultsSaved = false;
+	bool bInitialDiagnosticLogging = true;
+	bool bInitialAnimationURO = false;
+	uint8 InitialAnimationVisibilityOption = 0;
+	bool bInitialAlwaysRelevant = false;
+	float InitialNetCullDistanceSquared = 0.0f;
+	uint8 AppliedOptimizationProfileValue = 0;
 	virtual void BeginPlay() override;
 	virtual void OnRep_ReplicatedMovement() override;
 };

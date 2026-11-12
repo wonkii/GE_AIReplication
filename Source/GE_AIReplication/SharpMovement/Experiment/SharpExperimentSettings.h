@@ -7,12 +7,35 @@
 #include "../Prediction/SharpVisualPredictionSettings.h"
 #include "SharpExperimentSettings.generated.h"
 
+// Optimization presets are orthogonal to the seven network policies.
+// Baseline is the default to keep historic runs reproducible.
+UENUM(BlueprintType)
+enum class ESharpExperimentOptimizationPreset : uint8
+{
+	Baseline UMETA(DisplayName="Baseline (unchanged)"),
+	ResearchOptimized UMETA(DisplayName="Research Optimized (validate visual metrics)"),
+	Scalability UMETA(DisplayName="Scalability (separate benchmark)")
+};
+
 UCLASS(BlueprintType)
 class GE_AIREPLICATION_API USharpExperimentSettings : public UDataAsset
 {
 	GENERATED_BODY()
 
 public:
+	// Choose on DA_SharpExperimentSettings. The authoritative Manager replicates
+	// the resolved profile to clients. Change profiles BETWEEN PIE sessions only.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Optimization|Profile")
+	ESharpExperimentOptimizationPreset OptimizationProfile = ESharpExperimentOptimizationPreset::Baseline;
+
+	// Only affects Scalability, and only when explicitly enabled. Not suitable
+	// for full-coverage position error comparisons (actors may not replicate).
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Optimization|Scalability")
+	bool bScalabilityEnableDistanceRelevancy = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Optimization|Scalability", meta=(ClampMin="100.0", Units="cm"))
+	float ScalabilityNetCullDistanceCm = 10000.0f;
+
 	// Existing asset fields remain the canonical thresholds and prediction durations.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Detection", meta = (ClampMin = "0.0"))
 	float VelocityChangeThreshold = 300.0f;

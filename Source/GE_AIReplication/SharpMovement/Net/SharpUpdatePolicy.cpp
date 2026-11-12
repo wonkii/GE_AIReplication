@@ -27,6 +27,9 @@ bool USharpUpdatePolicy::ValidateConfiguration(ESharpExperimentMode InMode,
         : (bHasSavedNetUpdateFrequency ? SavedNetUpdateFrequencyHz : OwnerActor->GetNetUpdateFrequency());
     if (InMode == ESharpExperimentMode::Adaptive && InSettings->NormalNetUpdateFrequency > BaselineHz)
     { OutReason = TEXT("AdaptiveMinExceedsMax"); return false; }
+    if (InMode == ESharpExperimentMode::EventPredictor &&
+        (!InSettings->Prediction.bEnablePrediction || InSettings->Prediction.EventExtrapolationHorizonSeconds <= 0.0f))
+    { OutReason = TEXT("EventPredictionDisabledOrZeroHorizon"); return false; }
     if (InMode == ESharpExperimentMode::Burst)
     {
         if (InSettings->HighNetUpdateFrequency <= BaselineHz)
@@ -65,6 +68,7 @@ bool USharpUpdatePolicy::InitializePolicy(
     bHasSavedNetUpdateFrequency = false;
     SavedMinNetUpdateFrequencyHz = 0.0f;
     bHasSavedMinNetUpdateFrequency = false;
+    bHasSavedReplicateMovement = false;
     LastHandledSequenceId = 0;
     bBurstActive = false;
     BurstTimerHandle.Invalidate();
@@ -142,9 +146,9 @@ bool USharpUpdatePolicy::InitializePolicy(
         return true;
     }
 
-    // EventOnly / EventPredictor: 서버의 동일한 Snapshot 게시 경로를 사용한다.
-    // 이 시점에는 NetUpdateFrequency나 CMC를 변경하지 않는다.
-    // Mesh prediction belongs to the simulated-proxy presentation component.
+    // Event modes REPLACE ordinary FRepMovement, not supplement it.
+    // Leave SetReplicates(true), all component properties and actor relevancy intact.
+    // Simulated-proxy CMC tick is switched on the client by the replicated trial status.
     if (InMode == ESharpExperimentMode::EventOnly ||
         InMode == ESharpExperimentMode::EventPredictor)
     {
@@ -160,10 +164,21 @@ bool USharpUpdatePolicy::InitializePolicy(
                 *GetNameSafe(OwnerActor), *ModeName);
         }
 
+        bSavedReplicateMovement = OwnerActor->IsReplicatingMovement();
+        bHasSavedReplicateMovement = true;
+        if (!bSavedReplicateMovement)
+        {
+            UE_LOG(LogSharpUpdatePolicy, Error, TEXT("[M5][Policy] EventModeNeedsMovementReplicatedBaseline Actor=%s"), *GetNameSafe(OwnerActor));
+            bPolicyInitialized = false;
+            bHasSavedReplicateMovement = false;
+            return false;
+        }
+        OwnerActor->SetReplicateMovement(false);
+        OwnerActor->ForceNetUpdate();
         UE_LOG(LogSharpUpdatePolicy, Display,
             TEXT("[M5][Policy] Initialized Actor=%s Mode=%s "
                 "Settings=%s NetUpdateHz=%.1f "
-                "Action=AwaitDetectorSnapshot NoChange"),
+                "Action=DisableFRepMovement UseEventSnapshotChannel"),
             *GetNameSafe(OwnerActor),
             *ModeName,
             *GetNameSafe(InSettings),
@@ -423,6 +438,12 @@ void USharpUpdatePolicy::RestorePolicyState()
         OwnerActor->SetMinNetUpdateFrequency(SavedMinNetUpdateFrequencyHz);
     }
 
+    if (bHasSavedReplicateMovement)
+    {
+        OwnerActor->SetReplicateMovement(bSavedReplicateMovement);
+        OwnerActor->ForceNetUpdate();
+    }
+
     const float CurrentFrequencyHz = OwnerActor->GetNetUpdateFrequency();
     const float CurrentMinFrequencyHz = OwnerActor->GetMinNetUpdateFrequency();
 
@@ -433,6 +454,7 @@ void USharpUpdatePolicy::RestorePolicyState()
     bHasSavedNetUpdateFrequency = false;
     SavedMinNetUpdateFrequencyHz = 0.0f;
     bHasSavedMinNetUpdateFrequency = false;
+    bHasSavedReplicateMovement = false;
     LastHandledSequenceId = 0;
     bBurstActive = false;
 

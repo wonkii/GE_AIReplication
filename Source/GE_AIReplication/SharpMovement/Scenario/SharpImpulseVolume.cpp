@@ -88,8 +88,10 @@ void ASharpImpulseVolume::OnBeginOverlap(UPrimitiveComponent* Component, AActor*
 	else if (Config.DirectionSpace == ESharpImpulseDirectionSpace::PathTangent)
 	{
 		const ASharpSplinePath* Path = Enemy->Experiment->GetPath();
-		FVector Forward = Path->GetDirection(Path->ProjectDistance(Enemy->GetActorLocation())); Forward.Z = 0; Forward.Normalize();
-		if (Enemy->SplineFollower->IsMovingReverse()) { Forward *= -1; }
+		FVector Forward = Path ? Path->GetDirection(Path->ProjectDistance(Enemy->GetActorLocation())) : Enemy->GetVelocity();
+		Forward.Z = 0;
+		if (!Forward.Normalize()) { Forward = Enemy->GetActorForwardVector().GetSafeNormal2D(); }
+		if (Path && Enemy->SplineFollower->IsMovingReverse()) { Forward *= -1; }
 		Impulse = Forward * Impulse.X + FVector::CrossProduct(FVector::UpVector, Forward) * Impulse.Y + FVector::UpVector * Impulse.Z;
 	}
 	if (Impulse.ContainsNaN() || Impulse.IsNearlyZero()) { Enemy->Experiment->Fail(TEXT("Invalid resolved Impulse")); return; }

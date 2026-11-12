@@ -7,6 +7,8 @@
 #include "HAL/IConsoleManager.h"
 #include "TimerManager.h"
 
+DEFINE_LOG_CATEGORY_STATIC(LogSharpBatch, Log, All);
+
 void ASharpExperimentManager::ApplyAutomaticNetworkMode()
 {
 	if (!bAutoRepeat || ModeSequence.IsEmpty() || !bManageAdaptiveForModeSequence) { return; }
@@ -37,6 +39,14 @@ void ASharpExperimentManager::RestoreAutomaticNetworkMode()
 
 void ASharpExperimentManager::OnGroupStarted()
 {
+    StopIntegratedKnockback();
+    IntegratedKnockbackPulseIndex = 0;
+    if (bEnableIntegratedMovementCourse && !RandomWalkEnemies.IsEmpty())
+    {
+        GetWorldTimerManager().SetTimer(IntegratedKnockbackTimer, this,
+            &ASharpExperimentManager::ApplyIntegratedKnockbackPulse,
+            IntegratedKnockbackPulseIntervalSeconds, true, 2.0f);
+    }
 	if (!bRepeatContinuation)
 	{
 		RepetitionsStarted = 0;
@@ -44,6 +54,14 @@ void ASharpExperimentManager::OnGroupStarted()
 	}
 	bRepeatContinuation = false; ++RepetitionsStarted; bRepeatArmed = true;
 	bBatchFailureStopsGroup = bAutoRepeat || TrialDurationSeconds > 0;
+	if (bAllModesBatchActive)
+	{
+		const int32 BatchTrial = SequenceIndex * RepeatCount + RepetitionsStarted;
+		const FString ModeName = StaticEnum<ESharpExperimentMode>()->GetNameStringByValue(static_cast<int64>(Identity.Mode));
+		UE_LOG(LogSharpBatch, Display, TEXT("[Sharp][Batch] START %d/%d Mode=%s Repeat=%d/%d RunId=%s TrialId=%d"),
+			BatchTrial, ModeSequence.Num() * RepeatCount, *ModeName, RepetitionsStarted, RepeatCount,
+			*Identity.RunId, Identity.TrialId);
+	}
 	if (TrialDurationSeconds > 0)
 	{
 		GetWorldTimerManager().SetTimer(TrialDurationTimer, this, &ASharpExperimentManager::CompleteTimedTrial, TrialDurationSeconds, false);
@@ -52,6 +70,7 @@ void ASharpExperimentManager::OnGroupStarted()
 
 void ASharpExperimentManager::CompleteTimedTrial()
 {
+    StopIntegratedKnockback();
 	for (ASharpEnemyCharacter* Enemy : PreparedEnemies)
 	{
 		if (IsValid(Enemy) && Enemy->Experiment->GetManager() == this) { Enemy->Experiment->Complete(); }
@@ -77,7 +96,15 @@ void ASharpExperimentManager::OnGroupProgress()
 		Reject(TEXT("Automatic control cancelled after an Enemy failed")); return;
 	}
 	if (Summary.Total == 0 || Summary.Completed != Summary.Total) { return; }
+    StopIntegratedKnockback();
 	bRepeatArmed = false; GetWorldTimerManager().ClearTimer(TrialDurationTimer);
+	if (bAllModesBatchActive)
+	{
+		const int32 BatchTrial = SequenceIndex * RepeatCount + RepetitionsStarted;
+		UE_LOG(LogSharpBatch, Display, TEXT("[Sharp][Batch] COMPLETE %d/%d RunId=%s TrialId=%d Mode=%s"),
+			BatchTrial, ModeSequence.Num() * RepeatCount, *Identity.RunId, Identity.TrialId,
+			*StaticEnum<ESharpExperimentMode>()->GetNameStringByValue(static_cast<int64>(Identity.Mode)));
+	}
 	float Tail = Settings ? Settings->Recording.PostTrialObservationSeconds : 0.5f;
 	for (ASharpEnemyCharacter* Enemy : PreparedEnemies) { if (IsValid(Enemy)) { Tail = FMath::Max(Tail, Enemy->Experiment->Status.Recording.PostTrialObservationSeconds); } }
 	GetWorldTimerManager().SetTimer(RepeatTimer, this, &ASharpExperimentManager::RepeatNextTrial,
@@ -96,7 +123,15 @@ void ASharpExperimentManager::RepeatNextTrial()
 	}
 	if (RepetitionsStarted >= RepeatCount)
 	{
-		if (ModeSequence.IsEmpty() || SequenceIndex + 1 >= ModeSequence.Num()) { RestoreAutomaticNetworkMode(); return; }
+		if (ModeSequence.IsEmpty() || SequenceIndex + 1 >= ModeSequence.Num())
+		{
+			if (bAllModesBatchActive)
+			{
+				UE_LOG(LogSharpBatch, Display, TEXT("[Sharp][Batch] ALL COMPLETE: %d/%d trials, RunId=%s"),
+					ModeSequence.Num() * RepeatCount, ModeSequence.Num() * RepeatCount, *Identity.RunId);
+			}
+			RestoreAutomaticNetworkMode(); return;
+		}
 		++SequenceIndex; RepetitionsStarted = 0;
 	}
 	const ESharpExperimentMode NextMode = ModeSequence.IsEmpty() ? Identity.Mode : ModeSequence[SequenceIndex];

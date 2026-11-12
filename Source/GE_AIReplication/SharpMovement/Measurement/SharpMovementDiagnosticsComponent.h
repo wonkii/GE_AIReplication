@@ -17,6 +17,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Sharp Diagnostics", meta=(ClampMin="0.01", Units="s"))
 	float LogIntervalSeconds = 0.5f;
 	void HandleSessionChanged();
+	void SetDiagnosticLoggingEnabled(bool bEnabled);
 	void ObserveMovementReceipt(const FRepMovement& Received, const FVector& BeforePosition, const FVector& BeforeVelocity, uint8 BeforeMode);
 protected:
 	virtual void BeginPlay() override;

@@ -7,7 +7,7 @@
 
 class ASharpEnemyCharacter;
 
-/** Simulated-proxy Mesh presentation only. The capsule and CMC remain authoritative. */
+/** Legacy mesh-only helper; event transport now owns capsule presentation in SnapshotChannel. */
 UCLASS(ClassGroup=(SharpMovement))
 class GE_AIREPLICATION_API USharpVisualPredictorComponent : public UActorComponent
 {
@@ -17,6 +17,7 @@ public:
 	void QueueSnapshot(const FSharpMoveSnapshot& Snapshot);
 	void NotifyCorrection(const FVector& OldMeshPosition);
 	void HandleSessionChanged();
+	void SetIdleTickOptimizationEnabled(bool bEnabled);
 	void HandleCombatChanged();
 	bool OwnsPresentation() const { return bOwnsPresentation; }
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Sharp Prediction") bool bPredicting = false;
@@ -29,6 +30,8 @@ private:
 	UPROPERTY(Transient) TObjectPtr<ASharpEnemyCharacter> Enemy;
 	FSharpMoveSnapshot Pending, Active;
 	bool bPending = false, bOwnsPresentation = false;
+	bool bOptimizeIdleTick = false;
+	void RefreshTickScheduling();
 	int32 Generation = 0, Segment = 0;
 	double CombatSnapshotCutoff = -1;
 	ENetworkSmoothingMode OriginalSmoothing = ENetworkSmoothingMode::Exponential;

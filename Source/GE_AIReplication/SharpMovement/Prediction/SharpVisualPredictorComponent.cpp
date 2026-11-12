@@ -19,11 +19,35 @@ void USharpVisualPredictorComponent::BeginPlay()
 	if (Enemy) { AddTickPrerequisiteComponent(Enemy->GetCharacterMovement()); HandleSessionChanged(); }
 }
 
+void USharpVisualPredictorComponent::SetIdleTickOptimizationEnabled(bool bEnabled)
+{
+	bOptimizeIdleTick = bEnabled;
+	RefreshTickScheduling();
+}
+
+void USharpVisualPredictorComponent::RefreshTickScheduling()
+{
+	if (!HasBegunPlay() || !Enemy || !Enemy->Experiment) { return; }
+    const ESharpExperimentMode Mode = Enemy->Experiment->Status.Identity.Mode;
+    const bool bEventTransport = Mode == ESharpExperimentMode::EventOnly || Mode == ESharpExperimentMode::EventPredictor;
+    bool bNeedsTick = !bEventTransport;
+    if (bNeedsTick && bOptimizeIdleTick)
+    {
+        bNeedsTick = Enemy->GetLocalRole() == ROLE_SimulatedProxy && (bPending || bOwnsPresentation);
+    }
+	if (IsComponentTickEnabled() != bNeedsTick) { SetComponentTickEnabled(bNeedsTick); }
+}
+
 void USharpVisualPredictorComponent::HandleSessionChanged()
 {
 	if (!Enemy) { Enemy = Cast<ASharpEnemyCharacter>(GetOwner()); }
 	if (!Enemy) { return; }
 	const FSharpEnemyTrialStatus& Status = Enemy->Experiment->Status;
+    if (Status.Identity.Mode == ESharpExperimentMode::EventOnly || Status.Identity.Mode == ESharpExperimentMode::EventPredictor)
+    {
+        bPending = false;
+        SetOwnership(false);
+    }
 	if (Generation != Status.Generation || Segment != Status.Segment)
 	{
 		SetOwnership(false); bPending = false; Generation = Status.Generation; Segment = Status.Segment;
@@ -33,6 +57,7 @@ void USharpVisualPredictorComponent::HandleSessionChanged()
 	{
 		SetOwnership(false); bPending = false;
 	}
+	RefreshTickScheduling();
 }
 
 FVector USharpVisualPredictorComponent::BaselinePosition() const
@@ -64,13 +89,18 @@ void USharpVisualPredictorComponent::SetOwnership(bool bEnabled)
 		bPredicting = false;
 	}
 	bOwnsPresentation = bEnabled;
+	RefreshTickScheduling();
 }
 
 void USharpVisualPredictorComponent::QueueSnapshot(const FSharpMoveSnapshot& Snapshot)
 {
 	if (!Enemy) { Enemy = Cast<ASharpEnemyCharacter>(GetOwner()); }
-	if (!Enemy || Enemy->GetLocalRole() != ROLE_SimulatedProxy || Enemy->HitReaction->IsReacting() || Snapshot.ServerTime <= CombatSnapshotCutoff) { return; }
+    // Event modes exclusively use the capsule-level SnapshotChannel now.
+    if (!Enemy || Enemy->GetLocalRole() != ROLE_SimulatedProxy || Enemy->HitReaction->IsReacting() || Snapshot.ServerTime <= CombatSnapshotCutoff ||
+        Enemy->Experiment->Status.Identity.Mode == ESharpExperimentMode::EventOnly ||
+        Enemy->Experiment->Status.Identity.Mode == ESharpExperimentMode::EventPredictor) { return; }
 	Pending = Snapshot; bPending = true;
+	RefreshTickScheduling();
 }
 
 void USharpVisualPredictorComponent::HandleCombatChanged()
@@ -79,6 +109,7 @@ void USharpVisualPredictorComponent::HandleCombatChanged()
 	if (!Enemy) return;
 	if (const auto* GameState = GetWorld()->GetGameState()) CombatSnapshotCutoff = GameState->GetServerWorldTimeSeconds();
 	bPending = false; StopPrediction(TEXT("CombatReaction")); SetOwnership(false);
+	RefreshTickScheduling();
 }
 
 void USharpVisualPredictorComponent::NotifyCorrection(const FVector& OldMeshPosition)
@@ -109,8 +140,9 @@ void USharpVisualPredictorComponent::TickComponent(float DeltaTime, ELevelTick T
 	if (!GameState || !Settings.IsValid()) { SetOwnership(false); return; }
 	const double Now = GameState->GetServerWorldTimeSeconds();
 	const bool bActive = Status.State == ESharpEnemyTrialState::Running || Status.State == ESharpEnemyTrialState::Suspended;
-	const bool bWanted = bActive && Status.Identity.Mode == ESharpExperimentMode::EventPredictor && Settings.bEnablePrediction;
-	const bool bCustomCorrection = bActive && Status.Identity.Mode == ESharpExperimentMode::EventOnly && Settings.bEventOnlyUsesCustomCorrection;
+    // Kept only for legacy visual-correction code; new event modes never use it.
+    const bool bWanted = false;
+    const bool bCustomCorrection = false;
 	if (bCustomCorrection) { SetOwnership(true); }
 	if (bPending)
 	{
@@ -136,7 +168,7 @@ void USharpVisualPredictorComponent::TickComponent(float DeltaTime, ELevelTick T
 		else { Enemy->Recorder->RecordDiagnostic(TEXT("SnapshotRejected"), Pending.SequenceId, Pending.ServerTime, Age, 0, TEXT("InactiveModelExpiredFutureOrSuperseded")); }
 	}
 	if (!bWanted) { StopPrediction(TEXT("TrialEnded")); }
-	if (!bOwnsPresentation) { return; }
+	if (!bOwnsPresentation) { RefreshTickScheduling(); return; }
 	const FVector Baseline = BaselinePosition();
 	UCharacterMovementComponent* Movement = Enemy->GetCharacterMovement();
 	if (bPredicting)

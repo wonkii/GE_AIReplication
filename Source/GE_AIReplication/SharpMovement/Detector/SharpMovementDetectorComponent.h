@@ -2,6 +2,7 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "Detector/SharpMovementClassifier.h"
+#include "SharpMoveSnapshot.h"
 #include "SharpMovementDetectorComponent.generated.h"
 
 class ASharpEnemyCharacter;
@@ -14,6 +15,8 @@ class GE_AIREPLICATION_API USharpMovementDetectorComponent : public UActorCompon
 public:
 	void Start(const USharpExperimentSettings& Settings);
 	void Stop();
+	// Initial/recovery anchors share the detector sequence stream. Server only.
+	bool PublishStateKeyframe(bool bInitial);
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type Reason) override;
@@ -24,5 +27,6 @@ private:
 	uint32 Sequence = 0;
 	bool bObserving = false, bAirborneModel = false;
 	FSharpMovementSample Sample() const;
+	bool BuildSnapshot(const FSharpMovementSample& Observed, FSharpMoveSnapshot& OutSnapshot);
 	UFUNCTION() void ObserveMovement(float DeltaSeconds, FVector OldLocation, FVector OldVelocity);
 };

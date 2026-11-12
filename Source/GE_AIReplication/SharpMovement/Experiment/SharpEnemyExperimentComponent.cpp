@@ -5,6 +5,7 @@
 #include "../Enemy/SharpEnemyAIController.h"
 #include "../Measurement/SharpMovementDiagnosticsComponent.h"
 #include "../Movement/SharpSplineFollowerComponent.h"
+#include "../Movement/SharpRandomWalkerComponent.h"
 #include "../Net/SharpSnapshotChannelComponent.h"
 #include "../Net/SharpUpdatePolicy.h"
 #include "../Scenario/SharpEnemyPlacement.h"
@@ -38,6 +39,8 @@ void USharpEnemyExperimentComponent::BeginPlay()
 	{
 		Enemy->SplineFollower->OnStateChanged.AddUniqueDynamic(this, &USharpEnemyExperimentComponent::OnFollowStateChanged);
 		Enemy->SplineFollower->AddTickPrerequisiteComponent(this);
+		Enemy->RandomWalker->OnStateChanged.AddUniqueDynamic(this, &USharpEnemyExperimentComponent::OnRandomWalkStateChanged);
+		Enemy->RandomWalker->AddTickPrerequisiteComponent(this);
 	}
 }
 
@@ -61,13 +64,26 @@ bool USharpEnemyExperimentComponent::Owns(const ASharpExperimentManager* InManag
 
 bool USharpEnemyExperimentComponent::ValidateBinding(FString& OutReason) const
 {
-	if (!IsValid(Enemy) || !Enemy->HasAuthority() || !IsValid(Manager) || !IsValid(Path) ||
-		!Manager->IsRegistered(Path) || Path->AssignedEnemy != Enemy || Enemy->ExperimentActorId != PreparedActorId ||
-		Path->PathId != Status.PathId || Path->PathRevision != Status.PathRevision ||
+	if (!IsValid(Enemy) || !Enemy->HasAuthority() || !IsValid(Manager) ||
+		Enemy->ExperimentActorId != PreparedActorId || Enemy->ExperimentMovementSource != PreparedMovementSource ||
+		Status.MovementSource != PreparedMovementSource ||
 		Manager->Identity.RunId != Status.Identity.RunId || Manager->Identity.TrialId != Status.Identity.TrialId ||
 		Manager->Identity.Mode != Status.Identity.Mode || !IsValid(PreparedSettings))
 	{
-		OutReason = TEXT("Prepared registration, identity or Enemy changed; reset the trial"); return false;
+		OutReason = TEXT("Prepared registration, movement source, identity or Enemy changed; reset the trial"); return false;
+	}
+	if (PreparedMovementSource == ESharpEnemyMovementSource::Spline)
+	{
+		if (!IsValid(Path) || !Manager->IsRegistered(Path) || Path->AssignedEnemy != Enemy ||
+			Path->PathId != Status.PathId || Path->PathRevision != Status.PathRevision)
+		{
+			OutReason = TEXT("Prepared Spline or path identity changed; reset the trial"); return false;
+		}
+	}
+	else if (IsValid(Path) || !Manager->IsRegisteredRandom(Enemy) ||
+		Status.PathId != FName(*FString::Printf(TEXT("RW_%d"), PreparedActorId)) || Status.PathRevision != 1)
+	{
+		OutReason = TEXT("Prepared RandomWalk registration changed; reset the trial"); return false;
 	}
 	if (!Cast<ASharpEnemyAIController>(Enemy->GetController()))
 	{
@@ -79,8 +95,11 @@ bool USharpEnemyExperimentComponent::ValidateBinding(FString& OutReason) const
 bool USharpEnemyExperimentComponent::Prepare(ASharpExperimentManager* InManager, ASharpSplinePath* InPath,
 	const FSharpExperimentIdentity& Identity, const FTransform& StartTransform, FString& OutReason)
 {
-	if (!Enemy || !Enemy->HasAuthority() || !IsValid(InManager) || !IsValid(InPath) || !IsValid(InManager->Settings) ||
-		InPath->AssignedEnemy != Enemy || !InManager->IsRegistered(InPath) || Status.Generation == MAX_int32)
+	if (!Enemy || !Enemy->HasAuthority() || !IsValid(InManager) || !IsValid(InManager->Settings) ||
+		Status.Generation == MAX_int32 ||
+		(Enemy->ExperimentMovementSource == ESharpEnemyMovementSource::Spline ?
+			(!IsValid(InPath) || InPath->AssignedEnemy != Enemy || !InManager->IsRegistered(InPath)) :
+			(IsValid(InPath) || !InManager->IsRegisteredRandom(Enemy))))
 	{
 		OutReason = TEXT("Invalid server session binding or generation exhausted"); return false;
 	}
@@ -88,14 +107,16 @@ bool USharpEnemyExperimentComponent::Prepare(ASharpExperimentManager* InManager,
 	PreparedNetHz = Enemy->GetNetUpdateFrequency(); PreparedMinNetHz = Enemy->GetMinNetUpdateFrequency();
 	Manager = InManager;
 	Path = InPath;
+	PreparedMovementSource = Enemy->ExperimentMovementSource;
 	PreparedActorId = Enemy->ExperimentActorId;
 	// A running experiment never observes edits to a shared settings asset.
 	PreparedSettings = DuplicateObject<USharpExperimentSettings>(InManager->Settings, this);
 	const int32 NextGeneration = Status.Generation + 1;
 	Status = FSharpEnemyTrialStatus();
 	Status.Identity = Identity;
-	Status.PathId = Path->PathId;
-	Status.PathRevision = Path->PathRevision;
+	Status.MovementSource = PreparedMovementSource;
+	Status.PathId = InPath ? InPath->PathId : FName(*FString::Printf(TEXT("RW_%d"), PreparedActorId));
+	Status.PathRevision = InPath ? InPath->PathRevision : 1;
 	Status.Generation = NextGeneration;
 	Status.Recording = PreparedSettings->Recording;
 	Status.Prediction = PreparedSettings->GetPredictionSettings();
@@ -110,7 +131,11 @@ bool USharpEnemyExperimentComponent::Prepare(ASharpExperimentManager* InManager,
 	{
 		if (It->AppliesTo(Manager) && !It->PrepareEnemy(*Enemy, StartTransform, OutReason)) { Fail(OutReason); return false; }
 	}
-	if (!Enemy->SplineFollower->Prepare(Path, OutReason)) { Fail(OutReason); return false; }
+	if (PreparedMovementSource == ESharpEnemyMovementSource::Spline)
+	{
+		if (!Enemy->SplineFollower->Prepare(Path, OutReason)) { Fail(OutReason); return false; }
+	}
+	else if (!Enemy->RandomWalker->Prepare(PreparedActorId, OutReason)) { Fail(OutReason); return false; }
 	Enemy->Diagnostics->HandleSessionChanged();
 	return true;
 }
@@ -122,7 +147,9 @@ bool USharpEnemyExperimentComponent::CanStart(FString& OutReason) const
 	{
 		OutReason = TEXT("Only Ready, Stopped or Suspended Enemy can start; reset Completed/Failed Enemy"); return false;
 	}
-	return ValidateBinding(OutReason) && Enemy->SplineFollower->CanStart(OutReason) &&
+	return ValidateBinding(OutReason) &&
+		(PreparedMovementSource == ESharpEnemyMovementSource::Spline ?
+			Enemy->SplineFollower->CanStart(OutReason) : Enemy->RandomWalker->CanStart(OutReason)) &&
 		Enemy->UpdatePolicy->ValidateConfiguration(Status.Identity.Mode, PreparedSettings, OutReason);
 }
 
@@ -147,7 +174,16 @@ bool USharpEnemyExperimentComponent::Start(FString& OutReason)
 	++Status.Segment;
 	Status.ServerEndTime = -1.0;
 	Enemy->Detector->Start(*PreparedSettings);
-	if (!Enemy->SplineFollower->Start(OutReason)) { Fail(OutReason); return false; }
+	if (!StartMovement(OutReason)) { Fail(OutReason); return false; }
+    // A movement-free initial anchor must exist even before the first detector event.
+    if (Status.Identity.Mode == ESharpExperimentMode::EventOnly || Status.Identity.Mode == ESharpExperimentMode::EventPredictor)
+    {
+        if (!Enemy->Detector->PublishStateKeyframe(true))
+        {
+            OutReason = TEXT("Could not publish event transport initial anchor");
+            Fail(OutReason); return false;
+        }
+    }
 	return true;
 }
 
@@ -156,14 +192,14 @@ void USharpEnemyExperimentComponent::Stop()
 	AbortCombatSuspension();
 	CancelImpulseResume();
 	if (!Enemy || !Enemy->HasAuthority()) { return; }
-	Enemy->SplineFollower->Stop();
+	StopMovement();
 }
 
 void USharpEnemyExperimentComponent::SuspendInput()
 {
 	bResumeAfterCombat = false;
 	CancelImpulseResume();
-	if (Enemy && Enemy->HasAuthority() && IsExecuting()) { Enemy->SplineFollower->Suspend(); }
+	if (Enemy && Enemy->HasAuthority() && IsExecuting()) { SuspendMovement(); }
 }
 
 bool USharpEnemyExperimentComponent::ResumeInput(FString& OutReason)
@@ -209,7 +245,7 @@ bool USharpEnemyExperimentComponent::SuspendForImpulse(float Seconds)
 		if (CombatReactionId != 0) return;
 		// Impulse suspension belongs to the same observation segment: preserve the Detector and Recorder context.
 		FString Reason;
-		if (!ValidateBinding(Reason) || !Enemy->SplineFollower->Resume(Reason)) { Fail(Reason); }
+		if (!ValidateBinding(Reason) || !ResumeMovement(Reason)) { Fail(Reason); }
 	}), Seconds, false);
 	return true;
 }
@@ -219,7 +255,7 @@ void USharpEnemyExperimentComponent::BeginCombatSuspension(int32 ReactionId)
 	if (!Enemy || !Enemy->HasAuthority()) return;
 	CombatReactionId = ReactionId; CombatGeneration = Status.Generation; CombatSegment = Status.Segment;
 	bResumeAfterCombat = IsExecuting() || (Status.State == ESharpEnemyTrialState::Suspended && bImpulseSuspended);
-	if (IsExecuting()) Enemy->SplineFollower->Suspend();
+	if (IsExecuting()) SuspendMovement();
 }
 
 void USharpEnemyExperimentComponent::EndCombatSuspension(int32 ReactionId)
@@ -232,7 +268,7 @@ void USharpEnemyExperimentComponent::EndCombatSuspension(int32 ReactionId)
 	if (bResume)
 	{
 		FString Reason;
-		if (!ValidateBinding(Reason) || !Enemy->SplineFollower->Resume(Reason)) Fail(Reason);
+		if (!ValidateBinding(Reason) || !ResumeMovement(Reason)) Fail(Reason);
 	}
 }
 
@@ -245,7 +281,10 @@ void USharpEnemyExperimentComponent::AbortCombatSuspension()
 void USharpEnemyExperimentComponent::Complete()
 {
 	if (!Enemy || !Enemy->HasAuthority() || !IsObservingMovement()) { return; }
-	AbortCombatSuspension(); CancelImpulseResume(); Enemy->SplineFollower->Stop();
+	AbortCombatSuspension(); CancelImpulseResume(); StopMovement();
+    // End of an event trial must restore normal Actor movement replication
+    // before next Batch PrepareGroup validation, even if Stop emitted no callback.
+    RestorePolicy();
 	SetState(ESharpEnemyTrialState::Completed);
 }
 
@@ -254,7 +293,8 @@ void USharpEnemyExperimentComponent::Fail(const FString& Reason)
 	AbortCombatSuspension();
 	CancelImpulseResume();
 	if (!Enemy || !Enemy->HasAuthority() || Status.Generation == 0) { return; }
-	Enemy->SplineFollower->Fail(Reason);
+	if (PreparedMovementSource == ESharpEnemyMovementSource::Spline) { Enemy->SplineFollower->Fail(Reason); }
+	else { Enemy->RandomWalker->Fail(Reason); }
 }
 
 void USharpEnemyExperimentComponent::Release()
@@ -270,6 +310,7 @@ void USharpEnemyExperimentComponent::Release()
 	}
 	RestorePolicy();
 	Enemy->SplineFollower->Reset();
+	Enemy->RandomWalker->Reset();
 	Enemy->ConsumeMovementInputVector();
 	Enemy->GetCharacterMovement()->StopMovementImmediately();
 	Enemy->GetCharacterMovement()->ClearAccumulatedForces();
@@ -279,9 +320,58 @@ void USharpEnemyExperimentComponent::Release()
 	PreparedSettings = nullptr;
 }
 
+bool USharpEnemyExperimentComponent::StartMovement(FString& OutReason)
+{
+	return PreparedMovementSource == ESharpEnemyMovementSource::Spline ?
+		Enemy->SplineFollower->Start(OutReason) : Enemy->RandomWalker->Start(OutReason);
+}
+
+void USharpEnemyExperimentComponent::StopMovement()
+{
+	if (PreparedMovementSource == ESharpEnemyMovementSource::Spline) { Enemy->SplineFollower->Stop(); }
+	else { Enemy->RandomWalker->Stop(); }
+}
+
+void USharpEnemyExperimentComponent::SuspendMovement()
+{
+	if (PreparedMovementSource == ESharpEnemyMovementSource::Spline) { Enemy->SplineFollower->Suspend(); }
+	else { Enemy->RandomWalker->Suspend(); }
+}
+
+bool USharpEnemyExperimentComponent::ResumeMovement(FString& OutReason)
+{
+	return PreparedMovementSource == ESharpEnemyMovementSource::Spline ?
+		Enemy->SplineFollower->Resume(OutReason) : Enemy->RandomWalker->Resume(OutReason);
+}
+
+void USharpEnemyExperimentComponent::OnRandomWalkStateChanged(USharpRandomWalkerComponent* Walker,
+	ESharpRandomWalkState State, const FString& Reason)
+{
+	if (!Enemy || !Enemy->HasAuthority() || Walker != Enemy->RandomWalker ||
+		PreparedMovementSource != ESharpEnemyMovementSource::RandomWalk) { return; }
+	switch (State)
+	{
+	case ESharpRandomWalkState::Ready: SetState(ESharpEnemyTrialState::Ready); break;
+	case ESharpRandomWalkState::Moving: SetState(ESharpEnemyTrialState::Running); break;
+	case ESharpRandomWalkState::Stopped: RestorePolicy(); SetState(ESharpEnemyTrialState::Stopped); break;
+	case ESharpRandomWalkState::Suspended: SetState(ESharpEnemyTrialState::Suspended); break;
+	case ESharpRandomWalkState::Failed: RestorePolicy(); SetState(ESharpEnemyTrialState::Failed, Reason); break;
+	case ESharpRandomWalkState::Idle:
+		if (Status.State != ESharpEnemyTrialState::Idle)
+		{
+			RestorePolicy();
+			Enemy->GetCharacterMovement()->StopMovementImmediately();
+			SetState(ESharpEnemyTrialState::Failed, TEXT("RandomWalker reset outside session control"));
+		}
+		break;
+	default: break;
+	}
+}
+
 void USharpEnemyExperimentComponent::OnFollowStateChanged(USharpSplineFollowerComponent* Follower, ESharpSplineFollowState State, const FString& Reason)
 {
-	if (!Enemy || !Enemy->HasAuthority() || Follower != Enemy->SplineFollower) { return; }
+	if (!Enemy || !Enemy->HasAuthority() || Follower != Enemy->SplineFollower ||
+		PreparedMovementSource != ESharpEnemyMovementSource::Spline) { return; }
 	switch (State)
 	{
 	case ESharpSplineFollowState::Ready: SetState(ESharpEnemyTrialState::Ready); break;
@@ -338,6 +428,8 @@ void USharpEnemyExperimentComponent::EndPlay(const EEndPlayReason::Type EndPlayR
 	{
 		Enemy->SplineFollower->OnStateChanged.RemoveDynamic(this, &USharpEnemyExperimentComponent::OnFollowStateChanged);
 		Enemy->SplineFollower->RemoveTickPrerequisiteComponent(this);
+		Enemy->RandomWalker->OnStateChanged.RemoveDynamic(this, &USharpEnemyExperimentComponent::OnRandomWalkStateChanged);
+		Enemy->RandomWalker->RemoveTickPrerequisiteComponent(this);
 		if (Enemy->HasAuthority()) { Release(); }
 	}
 	Super::EndPlay(EndPlayReason);

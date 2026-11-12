@@ -45,6 +45,37 @@ bool FSharpEnemyPlacement::FindStart(const ASharpEnemyCharacter& Enemy, const AS
 	OutReason.Empty(); return true;
 }
 
+bool FSharpEnemyPlacement::FindRandomStart(const ASharpEnemyCharacter& Enemy, const FTransform& SavedTransform,
+	const TArray<AActor*>& IgnoreActors, FTransform& OutTransform, FString& OutReason)
+{
+	const UWorld* World = Enemy.GetWorld();
+	const UCapsuleComponent* Capsule = Enemy.GetCapsuleComponent();
+	if (!World || !Capsule || SavedTransform.ContainsNaN())
+	{
+		OutReason = TEXT("RandomWalk start requires a valid world, capsule and finite start transform"); return false;
+	}
+	const FVector Position = SavedTransform.GetLocation();
+	FCollisionQueryParams Query(SCENE_QUERY_STAT(SharpRandomWalkPlacement), false);
+	Query.AddIgnoredActor(&Enemy);
+	Query.AddIgnoredActors(IgnoreActors);
+	const FVector Floor = Position - FVector(0, 0, Capsule->GetScaledCapsuleHalfHeight());
+	FHitResult Hit;
+	if (!World->LineTraceSingleByChannel(Hit, Floor + FVector(0, 0, 50), Floor - FVector(0, 0, 100), ECC_Visibility, Query) ||
+		FMath::Abs(Hit.ImpactPoint.Z - Floor.Z) > 30.0f ||
+		Hit.ImpactNormal.Z < Enemy.GetCharacterMovement()->GetWalkableFloorZ())
+	{
+		OutReason = TEXT("RandomWalk start must be on a walkable floor blocking Visibility (place the capsule at ground height)"); return false;
+	}
+	if (World->OverlapBlockingTestByChannel(Position, SavedTransform.GetRotation(), Capsule->GetCollisionObjectType(),
+		FCollisionShape::MakeCapsule(Capsule->GetScaledCapsuleRadius(), Capsule->GetScaledCapsuleHalfHeight()), Query,
+		FCollisionResponseParams(Capsule->GetCollisionResponseToChannels())))
+	{
+		OutReason = TEXT("RandomWalk start capsule is blocked; move Enemy to clear floor space"); return false;
+	}
+	OutTransform = SavedTransform;
+	OutReason.Empty(); return true;
+}
+
 bool FSharpEnemyPlacement::Place(ASharpEnemyCharacter& Enemy, const FTransform& Transform, FString& OutReason)
 {
 	if (!Enemy.TeleportTo(Transform.GetLocation(), Transform.Rotator(), false, true))

@@ -11,5 +11,7 @@ struct GE_AIREPLICATION_API FSharpEnemyPlacement
 {
 	static bool FindStart(const ASharpEnemyCharacter& Enemy, const ASharpSplinePath& Path,
 		const TArray<AActor*>& IgnoreActors, FTransform& OutTransform, FString& OutReason);
+	static bool FindRandomStart(const ASharpEnemyCharacter& Enemy, const FTransform& SavedTransform,
+		const TArray<AActor*>& IgnoreActors, FTransform& OutTransform, FString& OutReason);
 	static bool Place(ASharpEnemyCharacter& Enemy, const FTransform& Transform, FString& OutReason);
 };

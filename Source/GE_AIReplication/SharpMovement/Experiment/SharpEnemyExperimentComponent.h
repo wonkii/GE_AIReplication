@@ -11,6 +11,7 @@ class ASharpSplinePath;
 class ASharpExperimentManager;
 class USharpExperimentSettings;
 class USharpSplineFollowerComponent;
+class USharpRandomWalkerComponent;
 
 // Per-Enemy execution lifetime. The Manager only coordinates these sessions.
 UCLASS(ClassGroup=(SharpMovement))
@@ -56,6 +57,7 @@ private:
 	UPROPERTY(Transient) TObjectPtr<ASharpSplinePath> Path;
 	UPROPERTY(Transient) TObjectPtr<USharpExperimentSettings> PreparedSettings;
 	int32 PreparedActorId = 0;
+	ESharpEnemyMovementSource PreparedMovementSource = ESharpEnemyMovementSource::Spline;
 	FTimerHandle ImpulseResumeTimer;
 	void CancelImpulseResume();
 	void AbortCombatSuspension();
@@ -69,4 +71,9 @@ private:
 	void RestorePolicy();
 	UFUNCTION() void OnRep_Status();
 	UFUNCTION() void OnFollowStateChanged(USharpSplineFollowerComponent* Follower, ESharpSplineFollowState State, const FString& Reason);
+	UFUNCTION() void OnRandomWalkStateChanged(USharpRandomWalkerComponent* Walker, ESharpRandomWalkState State, const FString& Reason);
+	bool StartMovement(FString& OutReason);
+	void StopMovement();
+	void SuspendMovement();
+	bool ResumeMovement(FString& OutReason);
 };

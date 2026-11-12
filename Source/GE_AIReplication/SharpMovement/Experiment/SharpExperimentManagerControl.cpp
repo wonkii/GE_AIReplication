@@ -1,4 +1,6 @@
 #include "SharpExperimentManager.h"
+#include "../Movement/SharpRandomWalkerComponent.h"
+#include "EngineUtils.h"
 #include "SharpExperimentValidation.h"
 #include "SharpExperimentSettings.h"
 #include "SharpEnemyExperimentComponent.h"
@@ -28,13 +30,29 @@ bool ASharpExperimentManager::IsRegistered(const ASharpSplinePath* Path) const
 	return Paths.Contains(Path);
 }
 
+bool ASharpExperimentManager::IsRegisteredRandom(const ASharpEnemyCharacter* Enemy) const
+{
+	return RandomWalkEnemies.ContainsByPredicate([Enemy](const TObjectPtr<ASharpEnemyCharacter>& Registered)
+	{
+		return Registered.Get() == Enemy;
+	});
+}
+
+FTransform ASharpExperimentManager::GetRandomWalkStartTransform(ASharpEnemyCharacter* Enemy) const
+{
+	if (const FTransform* Saved = RandomWalkInitialTransforms.Find(Enemy)) { return *Saved; }
+	return IsValid(Enemy) ? Enemy->GetActorTransform() : FTransform::Identity;
+}
+
 void ASharpExperimentManager::SetServerOnlyMovementDemo(bool bEnabled)
 {
 	if (!HasAuthority()) { return; }
 	bServerOnlyMovementDemo = bEnabled;
-	for (const ASharpSplinePath* Path : Paths)
+	TArray<ASharpEnemyCharacter*> Targets;
+	for (const ASharpSplinePath* Path : Paths) { if (IsValid(Path)) { Targets.AddUnique(Path->AssignedEnemy.Get()); } }
+	for (ASharpEnemyCharacter* Enemy : RandomWalkEnemies) { Targets.AddUnique(Enemy); }
+	for (ASharpEnemyCharacter* Enemy : Targets)
 	{
-		ASharpEnemyCharacter* Enemy = IsValid(Path) ? Path->AssignedEnemy.Get() : nullptr;
 		if (IsValid(Enemy) && Enemy->GetIsReplicated())
 		{
 			Enemy->SetReplicateMovement(!bEnabled);
@@ -43,10 +61,94 @@ void ASharpExperimentManager::SetServerOnlyMovementDemo(bool bEnabled)
 	}
 }
 
+bool ASharpExperimentManager::AssignRandomWalkIdentities(FString& OutReason)
+{
+    OutReason.Empty();
+    if (!HasAuthority()) { OutReason = TEXT("RandomWalk identity assignment requires server authority"); return false; }
+    if (RandomWalkEnemies.IsEmpty()) { return true; }
+    if (!bAutoAssignRandomWalkIdentity)
+    {
+        for (ASharpEnemyCharacter* Enemy : RandomWalkEnemies)
+        {
+            if (IsValid(Enemy) && Enemy->RandomWalker) { Enemy->RandomWalker->ClearManagerSeed(); }
+        }
+        return true;
+    }
+    if (RandomWalkFirstActorId <= 0 ||
+        static_cast<int64>(RandomWalkFirstActorId) + RandomWalkEnemies.Num() - 1 > MAX_int32)
+    {
+        OutReason = TEXT("RandomWalkFirstActorId and number of enemies exceed valid ActorId range"); return false;
+    }
+    TSet<const ASharpEnemyCharacter*> RandomTargets;
+    for (const ASharpEnemyCharacter* Enemy : RandomWalkEnemies)
+    {
+        if (!IsValid(Enemy) || Enemy->GetWorld() != GetWorld() || !Enemy->RandomWalker || RandomTargets.Contains(Enemy))
+        {
+            OutReason = TEXT("RandomWalkEnemies has an invalid/duplicate Enemy or missing RandomWalker"); return false;
+        }
+        RandomTargets.Add(Enemy);
+    }
+    // Validate the entire proposed ID range before touching any Actor.
+    for (TActorIterator<ASharpEnemyCharacter> It(GetWorld()); It; ++It)
+    {
+        const ASharpEnemyCharacter* Other = *It;
+        if (!RandomTargets.Contains(Other) && Other->ExperimentActorId >= RandomWalkFirstActorId &&
+            static_cast<int64>(Other->ExperimentActorId) < static_cast<int64>(RandomWalkFirstActorId) + RandomWalkEnemies.Num())
+        {
+            OutReason = FString::Printf(TEXT("RandomWalk auto ID range conflicts with %s (ActorId=%d). Change RandomWalkFirstActorId."),
+                *Other->GetName(), Other->ExperimentActorId);
+            return false;
+        }
+    }
+    for (int32 Index = 0; Index < RandomWalkEnemies.Num(); ++Index)
+    {
+        ASharpEnemyCharacter* Enemy = RandomWalkEnemies[Index];
+        const int32 OneBasedIndex = Index + 1;
+        const int32 Id = RandomWalkFirstActorId + Index;
+        const int32 Seed = static_cast<int32>(static_cast<uint32>(RandomWalkBaseSeed) + static_cast<uint32>(OneBasedIndex));
+        const bool bIdChanged = Enemy->ExperimentActorId != Id;
+        Enemy->ExperimentActorId = Id;
+        Enemy->RandomWalker->SetManagerSeed(Seed);
+        // Auto-prepare polls; do not force movement replication every 100 ms.
+        if (bIdChanged)
+        {
+            Enemy->ForceNetUpdate();
+            UE_LOG(LogSharpControl, Display, TEXT("[Sharp][AutoIdentity] Index=%d Enemy=%s ActorId=%d RandomSeed=%d"),
+                OneBasedIndex, *Enemy->GetName(), Id, Seed);
+        }
+    }
+    return true;
+}
+
 bool ASharpExperimentManager::PrepareGroup(bool bReset)
 {
 	FString Reason;
-	if (!FSharpExperimentValidation::ValidateRegistry(*this, Reason) || !FSharpExperimentValidation::ValidateReadiness(*this, Reason)) { return Reject(Reason); }
+    // Optional bounded random arena; Spline targets never receive this setting.
+    if (bEnableRandomWalkArena &&
+        (!FMath::IsFinite(RandomWalkArenaSizeCm.X) || !FMath::IsFinite(RandomWalkArenaSizeCm.Y) ||
+         !FMath::IsFinite(RandomWalkArenaMarginCm) ||
+         !FMath::IsFinite(RandomWalkAvoidanceLookAheadCm) ||
+         !FMath::IsFinite(RandomWalkWallProbeIntervalSeconds) ||
+         RandomWalkArenaSizeCm.X < 1000.0f || RandomWalkArenaSizeCm.Y < 1000.0f ||
+         RandomWalkArenaMarginCm < 0.0f || RandomWalkAvoidanceLookAheadCm < 100.0f ||
+         RandomWalkWallProbeIntervalSeconds < 0.02f ||
+         2.0f * (RandomWalkArenaMarginCm + RandomWalkAvoidanceLookAheadCm) >=
+             FMath::Min(RandomWalkArenaSizeCm.X, RandomWalkArenaSizeCm.Y)))
+    {
+        return Reject(TEXT("Invalid RandomWalk arena size, margin or avoidance probe settings"));
+    }
+    for (ASharpEnemyCharacter* Enemy : RandomWalkEnemies)
+    {
+        if (IsValid(Enemy) && Enemy->RandomWalker)
+        {
+            Enemy->RandomWalker->ConfigureArena(bEnableRandomWalkArena, GetActorLocation(),
+                GetActorRotation().Yaw, RandomWalkArenaSizeCm, RandomWalkArenaMarginCm,
+                RandomWalkAvoidanceLookAheadCm, bRandomWalkAvoidWorldStaticWalls,
+                RandomWalkWallProbeIntervalSeconds);
+        }
+    }
+    if (!AssignRandomWalkIdentities(Reason) || !FSharpExperimentValidation::ValidateRegistry(*this, Reason) ||
+        !FSharpExperimentValidation::ValidateReadiness(*this, Reason)) { return Reject(Reason); }
 	if (bReset && Identity.TrialId == MAX_int32) { return Reject(TEXT("TrialId exhausted; start a new run")); }
 	for (ASharpEnemyCharacter* Enemy : PreparedEnemies)
 	{
@@ -55,14 +157,29 @@ bool ASharpExperimentManager::PrepareGroup(bool bReset)
 			return Reject(TEXT("Stop or Reset the active group before preparing again"));
 		}
 	}
-	TArray<ASharpSplinePath*> Targets;
+	TArray<ASharpEnemyCharacter*> Targets;
+	TArray<ASharpSplinePath*> TargetPaths;
 	for (ASharpSplinePath* Path : Paths)
 	{
-		if (Path->AssignedEnemy->Experiment->Status.Generation == MAX_int32) { return Reject(TEXT("Enemy generation exhausted; start a new world")); }
-		Targets.Add(Path);
+		Targets.Add(Path->AssignedEnemy.Get());
+		TargetPaths.Add(Path);
+	}
+	for (ASharpEnemyCharacter* Enemy : RandomWalkEnemies)
+	{
+		Targets.Add(Enemy);
+		TargetPaths.Add(nullptr);
+	}
+	for (ASharpEnemyCharacter* Enemy : Targets)
+	{
+		if (Enemy->Experiment->Status.Generation == MAX_int32) { return Reject(TEXT("Enemy generation exhausted; start a new world")); }
 	}
 	TArray<FTransform> Transforms;
-	if (!FSharpExperimentValidation::BuildStartTransforms(*this, Targets, Transforms, Reason)) { return Reject(Reason); }
+	if (!FSharpExperimentValidation::BuildGroupStartTransforms(*this, Targets, TargetPaths, Transforms, Reason)) { return Reject(Reason); }
+	// Capture first level placement, not a later position reached by RandomWalk.
+	for (ASharpEnemyCharacter* Enemy : RandomWalkEnemies)
+	{
+		if (!RandomWalkInitialTransforms.Contains(Enemy)) { RandomWalkInitialTransforms.Add(Enemy, Enemy->GetActorTransform()); }
+	}
 	for (ASharpEnemyCharacter* Enemy : PreparedEnemies)
 	{
 		if (IsValid(Enemy)) { Enemy->Experiment->Release(); }
@@ -72,9 +189,9 @@ bool ASharpExperimentManager::PrepareGroup(bool bReset)
 	LastCommandError.Empty();
 	for (int32 I = 0; I < Targets.Num(); ++I)
 	{
-		ASharpEnemyCharacter* Enemy = Targets[I]->AssignedEnemy;
+		ASharpEnemyCharacter* Enemy = Targets[I];
 		PreparedEnemies.Add(Enemy);
-		if (!Enemy->Experiment->Prepare(this, Targets[I], Identity, Transforms[I], Reason))
+		if (!Enemy->Experiment->Prepare(this, TargetPaths[I], Identity, Transforms[I], Reason))
 		{
 			for (ASharpEnemyCharacter* Prepared : PreparedEnemies) { if (IsValid(Prepared)) { Prepared->Experiment->Fail(TEXT("Group preparation aborted: ") + Reason); } }
 			RefreshSummary(); return Reject(Reason);
@@ -106,14 +223,22 @@ void ASharpExperimentManager::StartAll()
 {
 	if (!CanControl()) { return; }
 	FString Reason;
-	if (!FSharpExperimentValidation::ValidateRegistry(*this, Reason) || !FSharpExperimentValidation::ValidateReadiness(*this, Reason)) { Reject(Reason); return; }
+    if ((PreparedEnemies.IsEmpty() && !AssignRandomWalkIdentities(Reason)) ||
+        !FSharpExperimentValidation::ValidateRegistry(*this, Reason) ||
+        !FSharpExperimentValidation::ValidateReadiness(*this, Reason)) { Reject(Reason); return; }
 	if (PreparedEnemies.IsEmpty() && !PrepareGroup(false)) { return; }
-	bool bAllRunning = true;
-	for (ASharpSplinePath* Path : Paths)
+	if (PreparedEnemies.Num() != Paths.Num() + RandomWalkEnemies.Num())
 	{
-		USharpEnemyExperimentComponent* Session = Path->AssignedEnemy->Experiment;
-		if (!Session->Owns(this, Path) || !Session->ValidateBinding(Reason)) { Reject(TEXT("Reset All after changing registrations: ") + Reason); return; }
-		bAllRunning &= Session->IsExecuting();
+		Reject(TEXT("Reset All after changing movement registrations")); return;
+	}
+	bool bAllRunning = true;
+	for (ASharpEnemyCharacter* Enemy : PreparedEnemies)
+	{
+		if (!IsValid(Enemy) || Enemy->Experiment->GetManager() != this || !Enemy->Experiment->ValidateBinding(Reason))
+		{
+			Reject(TEXT("Reset All after changing registrations: ") + Reason); return;
+		}
+		bAllRunning &= Enemy->Experiment->IsExecuting();
 	}
 	if (bAllRunning)
 	{
@@ -123,25 +248,25 @@ void ASharpExperimentManager::StartAll()
 	CancelAutomaticControl();
 	// Preflight all participants before issuing any input or policy change.
 	ApplyAutomaticNetworkMode();
-	for (ASharpSplinePath* Path : Paths)
+	for (ASharpEnemyCharacter* Enemy : PreparedEnemies)
 	{
-		if (!Path->AssignedEnemy->Experiment->CanStart(Reason))
+		if (!Enemy->Experiment->CanStart(Reason))
 		{
-			RestoreAutomaticNetworkMode(); Reject(Path->GetName() + TEXT(": ") + Reason); return;
+			RestoreAutomaticNetworkMode(); Reject(Enemy->GetName() + TEXT(": ") + Reason); return;
 		}
 	}
 	LastCommandError.Empty();
-	for (ASharpSplinePath* Path : Paths)
+	for (ASharpEnemyCharacter* Enemy : PreparedEnemies)
 	{
-		if (!Path->AssignedEnemy->Experiment->Start(Reason))
+		if (!Enemy->Experiment->Start(Reason))
 		{
-			for (ASharpSplinePath* Target : Paths) { Target->AssignedEnemy->Experiment->Stop(); }
+			for (ASharpEnemyCharacter* Target : PreparedEnemies) { if (IsValid(Target)) { Target->Experiment->Stop(); } }
 			RestoreAutomaticNetworkMode();
 			Reject(TEXT("Group start aborted: ") + Reason); return;
 		}
 	}
 	UE_LOG(LogSharpControl, Display, TEXT("[Sharp][Group] Started RunId=%s TrialId=%d Count=%d ServerTime=%.6f"),
-		*Identity.RunId, Identity.TrialId, Paths.Num(), GetWorld()->GetTimeSeconds());
+		*Identity.RunId, Identity.TrialId, PreparedEnemies.Num(), GetWorld()->GetTimeSeconds());
 	OnGroupStarted();
 	RefreshSummary();
 }
@@ -271,11 +396,14 @@ void ASharpExperimentManager::RefreshSummary()
 {
 	if (!HasAuthority()) { return; }
 	Summary = FSharpExperimentSummary();
-	Summary.Total = Paths.Num();
-	for (ASharpSplinePath* Path : Paths)
+	Summary.Total = Paths.Num() + RandomWalkEnemies.Num();
+	TArray<ASharpEnemyCharacter*> Targets;
+	for (ASharpSplinePath* Path : Paths) { Targets.Add(IsValid(Path) ? Path->AssignedEnemy.Get() : nullptr); }
+	for (ASharpEnemyCharacter* Enemy : RandomWalkEnemies) { Targets.Add(Enemy); }
+	for (ASharpEnemyCharacter* Enemy : Targets)
 	{
-		if (!IsValid(Path) || !IsValid(Path->AssignedEnemy)) { ++Summary.Failed; continue; }
-		switch (Path->AssignedEnemy->Experiment->Status.State)
+		if (!IsValid(Enemy) || !IsValid(Enemy->Experiment)) { ++Summary.Failed; continue; }
+		switch (Enemy->Experiment->Status.State)
 		{
 		case ESharpEnemyTrialState::Ready: ++Summary.Ready; break;
 		case ESharpEnemyTrialState::Running: ++Summary.Running; break;

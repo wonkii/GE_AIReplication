@@ -21,11 +21,23 @@ void USharpMovementDiagnosticsComponent::BeginPlay()
 {
 	Super::BeginPlay();
 	Enemy = Cast<ASharpEnemyCharacter>(GetOwner());
-	if (Enemy && Enemy->HasAuthority())
-	{
-		Enemy->OnCharacterMovementUpdated.AddUniqueDynamic(this, &USharpMovementDiagnosticsComponent::ObserveServerMovement);
-	}
+	SetDiagnosticLoggingEnabled(bEnableLogging);
 	HandleSessionChanged();
+}
+
+void USharpMovementDiagnosticsComponent::SetDiagnosticLoggingEnabled(bool bEnabled)
+{
+	bEnableLogging = bEnabled;
+	if (!Enemy) { Enemy = Cast<ASharpEnemyCharacter>(GetOwner()); }
+	if (!HasBegunPlay() || !Enemy) { return; }
+	// Preserve historical Baseline Tick scheduling; optimized mode disables it entirely.
+	const bool bNeedsTick = bEnabled;
+	if (IsComponentTickEnabled() != bNeedsTick) { SetComponentTickEnabled(bNeedsTick); }
+	if (Enemy->HasAuthority())
+	{
+		if (bEnabled) { Enemy->OnCharacterMovementUpdated.AddUniqueDynamic(this, &USharpMovementDiagnosticsComponent::ObserveServerMovement); }
+		else { Enemy->OnCharacterMovementUpdated.RemoveDynamic(this, &USharpMovementDiagnosticsComponent::ObserveServerMovement); }
+	}
 }
 
 void USharpMovementDiagnosticsComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -99,7 +111,7 @@ void USharpMovementDiagnosticsComponent::ObserveMovementReceipt(const FRepMoveme
 	const FVector& BeforePosition, const FVector& BeforeVelocity, uint8 BeforeMode)
 {
 	if (!Enemy) { Enemy = Cast<ASharpEnemyCharacter>(GetOwner()); }
-	if (!Enemy || Enemy->HasAuthority() || Enemy->GetLocalRole() != ROLE_SimulatedProxy || !IsObservationWindow()) { return; }
+	if (!bEnableLogging || !Enemy || Enemy->HasAuthority() || Enemy->GetLocalRole() != ROLE_SimulatedProxy || !IsObservationWindow()) { return; }
 	HandleSessionChanged();
 	const double LocalTime = GetWorld()->GetTimeSeconds();
 	const double IntervalMs = LastReceiveTime >= 0 ? (LocalTime - LastReceiveTime) * 1000.0 : -1.0;

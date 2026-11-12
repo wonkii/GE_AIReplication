@@ -3,6 +3,7 @@
 #include "SharpExperimentSettings.h"
 #include "SharpEnemyExperimentComponent.h"
 #include "../Enemy/SharpEnemyCharacter.h"
+#include "../Movement/SharpRandomWalkerComponent.h"
 #include "../Measurement/SharpConnectionRecorderComponent.h"
 #include "TimerManager.h"
 #include "Engine/World.h"
@@ -26,11 +27,57 @@ void ASharpExperimentManager::BeginPlay()
 	Super::BeginPlay();
 	if (!HasAuthority())
 	{
+		// OnRep_OptimizationProfile will apply the authoritative choice later.
+		ApplyOptimizationProfileToEnemies();
 		return;
+	}
+    FParse::Bool(FCommandLine::Get(), TEXT("SharpIntegratedCourse="), bEnableIntegratedMovementCourse);
+    if (bEnableIntegratedMovementCourse && (bAutoSpawnRandomWalkEnemies || !RandomWalkEnemies.IsEmpty()))
+    {
+        // Obstacle avoidance is explicitly enabled for the integrated course.
+        // This is normally off in legacy levels, and therefore must not depend
+        // on an editor-side property change made between Batch trials.
+        bEnableRandomWalkArena = true;
+        bRandomWalkAvoidWorldStaticWalls = true;
+        AutoSpawnBehaviorSelection = ESharpRandomWalkBehaviorSelection::Mixed;
+        for (ASharpEnemyCharacter* Enemy : RandomWalkEnemies)
+        {
+            if (IsValid(Enemy) && Enemy->RandomWalker)
+            {
+                Enemy->RandomWalker->Settings.BehaviorSelection = ESharpRandomWalkBehaviorSelection::Mixed;
+                Enemy->RandomWalker->Settings.MaximumTurnAngle = 180.0f;
+            }
+        }
+    }
+	ActiveOptimizationProfile = Settings ? Settings->OptimizationProfile : ESharpExperimentOptimizationPreset::Baseline;
+	ApplyOptimizationProfileToEnemies();
+
+	// A dedicated preset is applied at runtime, so existing map / Blueprint values
+	// for the older Repeat controls cannot silently reduce the batch to one trial.
+	bAllModesBatchActive = bAutoRunAllModes;
+	FParse::Bool(FCommandLine::Get(), TEXT("SharpAllModesBatch="), bAllModesBatchActive);
+	if (bAllModesBatchActive)
+	{
+		bPrepareOnBeginPlay = true;
+		bAutoStartTrial = true;
+		bAutoRepeat = true;
+		bManageAdaptiveForModeSequence = true;
+		RepeatCount = AllModesRepetitionsPerMode;
+		TrialDurationSeconds = AllModesTrialDurationSeconds;
+		RepeatDelaySeconds = 1.0f;
+		ModeSequence = {
+			ESharpExperimentMode::Default, ESharpExperimentMode::Adaptive,
+			ESharpExperimentMode::AlwaysHigh, ESharpExperimentMode::SingleShot,
+			ESharpExperimentMode::Burst, ESharpExperimentMode::EventOnly,
+			ESharpExperimentMode::EventPredictor
+		};
+		UE_LOG(LogSharpExperiment, Display,
+			TEXT("[Sharp][Batch] Enabled: %d modes x %d trials, %.1fs per trial; total %d trials"),
+			ModeSequence.Num(), RepeatCount, TrialDurationSeconds, ModeSequence.Num() * RepeatCount);
 	}
 
 	Identity.RunId = ConfiguredRunId;
-	FParse::Bool(FCommandLine::Get(), TEXT("SharpAutoRepeat="), bAutoRepeat);
+	if (!bAllModesBatchActive) { FParse::Bool(FCommandLine::Get(), TEXT("SharpAutoRepeat="), bAutoRepeat); }
 	FParse::Value(FCommandLine::Get(), TEXT("SharpRunId="), Identity.RunId);
 	if (Identity.RunId.IsEmpty())
 	{
@@ -44,7 +91,7 @@ void ASharpExperimentManager::BeginPlay()
 	Identity.Mode = ConfiguredMode;
 	if (bAutoRepeat && !ModeSequence.IsEmpty()) { Identity.Mode = ModeSequence[0]; }
 	FString ModeOverride;
-	if (FParse::Value(FCommandLine::Get(), TEXT("SharpMode="), ModeOverride))
+	if (!bAllModesBatchActive && FParse::Value(FCommandLine::Get(), TEXT("SharpMode="), ModeOverride))
 	{
 		const UEnum* ModeEnum = StaticEnum<ESharpExperimentMode>();
 		const int64 Value = ModeEnum->GetValueByNameString(ModeOverride);
@@ -58,12 +105,31 @@ void ASharpExperimentManager::BeginPlay()
 		}
 	}
 
+    FString AssignReason;
+    // Spawn before registry validation, experiment preparation and auto identity binding.
+    // Only the authoritative world performs this; clients receive replicated actors.
+    if (!SpawnConfiguredRandomWalkEnemies(AssignReason) ||
+        !AssignRandomWalkIdentities(AssignReason))
+    {
+        Reject(AssignReason);
+        return;
+    }
+    // Course configuration and placement are optional: they must never
+    // silently prevent the seven-mode experiment from starting.
+    if (!SpawnIntegratedCourseObstacles(AssignReason))
+    {
+        UE_LOG(LogSharpExperiment, Error,
+            TEXT("[Sharp][Course] Disabled because course setup failed: %s. Batch will continue."),
+            *AssignReason);
+        bEnableIntegratedMovementCourse = false;
+    }
+	ApplyOptimizationProfileToEnemies(); // Includes auto-spawned enemies.
 	LogStartup();
 	ForceNetUpdate();
-	FParse::Bool(FCommandLine::Get(), TEXT("SharpAutoStart="), bAutoStartTrial);
+	if (!bAllModesBatchActive) { FParse::Bool(FCommandLine::Get(), TEXT("SharpAutoStart="), bAutoStartTrial); }
 	FParse::Value(FCommandLine::Get(), TEXT("SharpStartDelay="), AutoStartDelaySeconds);
 	FParse::Value(FCommandLine::Get(), TEXT("SharpExpectedClients="), ExpectedClientCount);
-	FParse::Value(FCommandLine::Get(), TEXT("SharpDurationSec="), TrialDurationSeconds);
+	if (!bAllModesBatchActive) { FParse::Value(FCommandLine::Get(), TEXT("SharpDurationSec="), TrialDurationSeconds); }
 	if (bAutoRepeat && !ModeSequence.IsEmpty())
 	{
 		SequenceIndex = ModeSequence.IndexOfByKey(Identity.Mode);
@@ -80,6 +146,11 @@ void ASharpExperimentManager::BeginPlay()
 		PreparationDeadline = GetWorld()->GetTimeSeconds() + PreparationTimeoutSeconds;
 		GetWorldTimerManager().SetTimer(PreparationTimer, this, &ASharpExperimentManager::TryAutomaticPrepare, 0.1f, true);
 	}
+}
+
+void ASharpExperimentManager::OnRep_OptimizationProfile()
+{
+	ApplyOptimizationProfileToEnemies();
 }
 
 void ASharpExperimentManager::OnRep_Identity()
@@ -110,6 +181,7 @@ void ASharpExperimentManager::GetLifetimeReplicatedProps(TArray<FLifetimePropert
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(ASharpExperimentManager, Identity);
+	DOREPLIFETIME(ASharpExperimentManager, ActiveOptimizationProfile);
 	DOREPLIFETIME(ASharpExperimentManager, Summary);
 	DOREPLIFETIME(ASharpExperimentManager, LastCommandError);
 	DOREPLIFETIME(ASharpExperimentManager, RecordingConfiguration);
@@ -117,6 +189,7 @@ void ASharpExperimentManager::GetLifetimeReplicatedProps(TArray<FLifetimePropert
 
 void ASharpExperimentManager::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+    StopIntegratedKnockback();
 	CancelAutomaticControl();
 	RestoreAutomaticNetworkMode();
 	for (ASharpEnemyCharacter* Enemy : PreparedEnemies)
