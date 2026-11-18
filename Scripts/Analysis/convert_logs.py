@@ -188,6 +188,11 @@ def convert_trial(trial: Path, force: bool, clock: str = "wall") -> str:
         write_csv(trial / "baseline_summary.csv", keys, [[s.get(k, "") for k in keys] for s in summaries])
     (trial / MARKER).write_text(
         f"이 폴더의 CSV는 convert_logs.py가 로그에서 만든 것이다 (0.5초 간격 샘플, 시계={clock}).\n", encoding="utf-8")
+    from task_readme import describe_task
+    describe_task(trial, '실행 로그 CSV 변환', '기존 실행 로그에서 분석 입력 CSV 추출',
+                  f'convert_logs.py clock={clock}',
+                  ['*.log: 원본 로그', '*.csv: 로그에서 추출한 저빈도 샘플. 정밀 실측 기록과 구분',
+                   'converted_from_logs.txt: 변환 여부와 시계 기준'])
     counts = ", ".join(f"클라이언트 {k} {v}줄" for k, v in client_counts.items())
     return f"서버 {len(server_rows)}줄, {counts or '클라이언트 로그 없음'}, 요약 {len(summaries)}건 (시계={clock})"
 

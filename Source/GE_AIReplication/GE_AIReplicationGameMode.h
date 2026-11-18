@@ -18,6 +18,7 @@ public:
 	
 	/** Constructor */
 	AGE_AIReplicationGameMode();
+	virtual void HandleStartingNewPlayer_Implementation(APlayerController* NewPlayer) override;
 };
 
 

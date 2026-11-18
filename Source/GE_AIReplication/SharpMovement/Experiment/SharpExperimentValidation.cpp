@@ -29,9 +29,13 @@ bool FSharpExperimentValidation::ValidateTarget(const ASharpExperimentManager& M
     }
     const ASharpEnemyCharacter* Enemy = Path->AssignedEnemy;
     if (!IsValid(Enemy) || Enemy->GetWorld() != Manager.GetWorld() || Enemy->ExperimentActorId <= 0 ||
-        !Enemy->SplineFollower || !Enemy->Experiment || !Enemy->UpdatePolicy || !Enemy->GetIsReplicated() || !Enemy->IsReplicatingMovement())
+        !Enemy->SplineFollower || !Enemy->Experiment || !Enemy->UpdatePolicy || !Enemy->GetIsReplicated())
     {
         OutReason = FString::Printf(TEXT("Path %s needs a replicated SharpEnemy with ActorId > 0"), *Path->GetName()); return false;
+    }
+    if (!Enemy->IsReplicatingMovement() && !Manager.IsServerOnlyMovementDemo())
+    {
+        OutReason = FString::Printf(TEXT("Path %s requires Replicate Movement"), *Path->GetName()); return false;
     }
     int32 Registrations = 0;
     for (const ASharpSplinePath* Registered : Manager.Paths) { if (Registered == Path) { ++Registrations; } }

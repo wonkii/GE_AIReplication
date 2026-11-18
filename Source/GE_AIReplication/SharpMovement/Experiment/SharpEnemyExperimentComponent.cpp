@@ -18,6 +18,7 @@
 #include "Engine/World.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Net/UnrealNetwork.h"
+#include "Combat/HitReactionComponent.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogSharpEnemyTrial, Log, All);
 
@@ -116,6 +117,7 @@ bool USharpEnemyExperimentComponent::Prepare(ASharpExperimentManager* InManager,
 
 bool USharpEnemyExperimentComponent::CanStart(FString& OutReason) const
 {
+	if (Enemy && Enemy->HitReaction->IsReacting()) { OutReason = TEXT("Cannot start during a combat reaction"); return false; }
 	if (Status.State != ESharpEnemyTrialState::Ready && Status.State != ESharpEnemyTrialState::Stopped && Status.State != ESharpEnemyTrialState::Suspended)
 	{
 		OutReason = TEXT("Only Ready, Stopped or Suspended Enemy can start; reset Completed/Failed Enemy"); return false;
@@ -126,9 +128,9 @@ bool USharpEnemyExperimentComponent::CanStart(FString& OutReason) const
 
 bool USharpEnemyExperimentComponent::Start(FString& OutReason)
 {
-	CancelImpulseResume();
 	if (Status.State == ESharpEnemyTrialState::Running) { return ValidateBinding(OutReason); }
 	if (!CanStart(OutReason)) { return false; }
+	CancelImpulseResume();
 	if (Status.Segment == MAX_int32) { OutReason = TEXT("Segment exhausted; reset Enemy"); return false; }
 	if (!Enemy->UpdatePolicy->IsPolicyInitialized())
 	{
@@ -151,6 +153,7 @@ bool USharpEnemyExperimentComponent::Start(FString& OutReason)
 
 void USharpEnemyExperimentComponent::Stop()
 {
+	AbortCombatSuspension();
 	CancelImpulseResume();
 	if (!Enemy || !Enemy->HasAuthority()) { return; }
 	Enemy->SplineFollower->Stop();
@@ -158,6 +161,7 @@ void USharpEnemyExperimentComponent::Stop()
 
 void USharpEnemyExperimentComponent::SuspendInput()
 {
+	bResumeAfterCombat = false;
 	CancelImpulseResume();
 	if (Enemy && Enemy->HasAuthority() && IsExecuting()) { Enemy->SplineFollower->Suspend(); }
 }
@@ -188,6 +192,7 @@ void USharpEnemyExperimentComponent::ApplyBaseline()
 
 void USharpEnemyExperimentComponent::CancelImpulseResume()
 {
+	bImpulseSuspended = false;
 	if (GetWorld()) { GetWorld()->GetTimerManager().ClearTimer(ImpulseResumeTimer); }
 }
 
@@ -195,10 +200,13 @@ bool USharpEnemyExperimentComponent::SuspendForImpulse(float Seconds)
 {
 	if (!Enemy || !Enemy->HasAuthority() || !IsExecuting() || !FMath::IsFinite(Seconds) || Seconds <= 0) { return false; }
 	SuspendInput();
+	bImpulseSuspended = true;
 	const int32 CapturedGeneration = Status.Generation, CapturedSegment = Status.Segment;
 	GetWorld()->GetTimerManager().SetTimer(ImpulseResumeTimer, FTimerDelegate::CreateWeakLambda(this, [this, CapturedGeneration, CapturedSegment]()
 	{
 		if (Status.Generation != CapturedGeneration || Status.Segment != CapturedSegment || Status.State != ESharpEnemyTrialState::Suspended) { return; }
+		bImpulseSuspended = false;
+		if (CombatReactionId != 0) return;
 		// Impulse suspension belongs to the same observation segment: preserve the Detector and Recorder context.
 		FString Reason;
 		if (!ValidateBinding(Reason) || !Enemy->SplineFollower->Resume(Reason)) { Fail(Reason); }
@@ -206,15 +214,44 @@ bool USharpEnemyExperimentComponent::SuspendForImpulse(float Seconds)
 	return true;
 }
 
+void USharpEnemyExperimentComponent::BeginCombatSuspension(int32 ReactionId)
+{
+	if (!Enemy || !Enemy->HasAuthority()) return;
+	CombatReactionId = ReactionId; CombatGeneration = Status.Generation; CombatSegment = Status.Segment;
+	bResumeAfterCombat = IsExecuting() || (Status.State == ESharpEnemyTrialState::Suspended && bImpulseSuspended);
+	if (IsExecuting()) Enemy->SplineFollower->Suspend();
+}
+
+void USharpEnemyExperimentComponent::EndCombatSuspension(int32 ReactionId)
+{
+	if (!Enemy || !Enemy->HasAuthority() || CombatReactionId != ReactionId) return;
+	CombatReactionId = 0;
+	const bool bResume = bResumeAfterCombat && CombatGeneration == Status.Generation && CombatSegment == Status.Segment &&
+		Status.State == ESharpEnemyTrialState::Suspended && !bImpulseSuspended;
+	bResumeAfterCombat = false;
+	if (bResume)
+	{
+		FString Reason;
+		if (!ValidateBinding(Reason) || !Enemy->SplineFollower->Resume(Reason)) Fail(Reason);
+	}
+}
+
+void USharpEnemyExperimentComponent::AbortCombatSuspension()
+{
+	CombatReactionId = 0; bResumeAfterCombat = false;
+	if (Enemy && Enemy->HasAuthority()) Enemy->HitReaction->CancelReaction();
+}
+
 void USharpEnemyExperimentComponent::Complete()
 {
 	if (!Enemy || !Enemy->HasAuthority() || !IsObservingMovement()) { return; }
-	CancelImpulseResume(); Enemy->SplineFollower->Stop();
+	AbortCombatSuspension(); CancelImpulseResume(); Enemy->SplineFollower->Stop();
 	SetState(ESharpEnemyTrialState::Completed);
 }
 
 void USharpEnemyExperimentComponent::Fail(const FString& Reason)
 {
+	AbortCombatSuspension();
 	CancelImpulseResume();
 	if (!Enemy || !Enemy->HasAuthority() || Status.Generation == 0) { return; }
 	Enemy->SplineFollower->Fail(Reason);
@@ -222,6 +259,7 @@ void USharpEnemyExperimentComponent::Fail(const FString& Reason)
 
 void USharpEnemyExperimentComponent::Release()
 {
+	AbortCombatSuspension();
 	CancelImpulseResume();
 	if (!Enemy || !Enemy->HasAuthority()) { return; }
 	// Close the old context before any teleport or force/velocity changes.

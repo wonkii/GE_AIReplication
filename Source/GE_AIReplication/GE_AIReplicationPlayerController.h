@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerController.h"
+#include "SharpMovement/Debug/SharpExperimentDebugTypes.h"
 #include "GE_AIReplicationPlayerController.generated.h"
 
 class UInputMappingContext;
@@ -18,6 +19,24 @@ class AGE_AIReplicationPlayerController : public APlayerController
 {
 	GENERATED_BODY()
 	
+public:
+
+	/** Development console commands; clients forward requests through their owned controller. */
+	UFUNCTION(Exec) void SharpPrepare();
+	UFUNCTION(Exec) void SharpStart();
+	UFUNCTION(Exec) void SharpStop();
+	UFUNCTION(Exec) void SharpReset();
+	UFUNCTION(Exec) void SharpStatus();
+	UFUNCTION(Exec) void SharpServerOnlyMovement(int32 Enabled);
+
+private:
+
+	void RequestSharpDebugCommand(ESharpExperimentDebugCommand Command);
+	UFUNCTION(Server, Reliable)
+	void ServerSharpDebugCommand(ESharpExperimentDebugCommand Command);
+	UFUNCTION(Client, Reliable)
+	void ClientSharpDebugResult(const FString& Message, bool bSuccess);
+
 protected:
 
 	/** Input Mapping Contexts */

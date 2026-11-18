@@ -1,8 +1,10 @@
 # 실험 실행·분석 스크립트
 
+새 결과물에는 [팀 Saved 규칙](../../docs/Legacy/Workflow/Saved_결과물_관리.md)에 따라 README를 자동 생성한다. 분석기의 기본 출력은 입력 폴더의 `_analysis/<작업ID>/`이며, `--out`을 지정하면 해당 작업 폴더를 사용한다. 같은 폴더로 분석을 반복하면 결과가 갱신되므로 서로 다른 작업은 다른 출력 폴더를 지정한다.
+
 > native Recorder가 기존 분석 CSV 양식에 연결되어 있다. 아래 로그 변환 안내는 기존 저빈도 기록 분석에도 사용할 수 있다.
 
-현재 다중 Enemy 구현의 설정·기록·반복·보고서 안내는 [실험 기능 안내](../../docs/Architecture/SharpMovement_실험기능.md)를 참고한다.
+현재 다중 Enemy 구현의 설정·기록·반복·보고서 안내는 [실험 기능 안내](../../docs/Legacy/Architecture/SharpMovement_실험기능.md)를 참고한다.
 
 ```powershell
 python Scripts/Analysis/sharp_metrics.py Saved/SharpExperiments --native --clock wall
@@ -10,7 +12,7 @@ python Scripts/Analysis/sharp_metrics.py Saved/SharpExperiments --native --clock
 
 `--native`는 Enemy별 원본 기록을 `_collected`로 모은 뒤 분석한다. `report.html`과 `report.json`, 정밀 사건·Detector·예측 진단·연결 비용·조건 비교 결과를 함께 생성한다. 같은 PC에서는 wall, 별도 PC에서는 시계 동기화 상황을 고려해 server를 선택한다.
 
-다중 Spline 리팩터링 이후 이동 로그에 Generation/Segment/PathId/PathRevision/State를 추가한다. 로그 변환기는 이 열과 `control_events.csv`를 보존하며, 분석기는 RunId/TrialId/ActorId/Generation/Segment 실행 키 안에서만 보간한다. 결과의 ActorId는 기존 식별자를 유지하고 ExecutionKey에 실행 구간을 표시한다. Generation이 없는 기존 CSV는 기존 방식으로 처리한다. 상세 설정은 [다중 Enemy 가이드](../../docs/M1/M1_MultiEnemy_Spline_설정.md)를 참고한다.
+다중 Spline 리팩터링 이후 이동 로그에 Generation/Segment/PathId/PathRevision/State를 추가한다. 로그 변환기는 이 열과 `control_events.csv`를 보존하며, 분석기는 RunId/TrialId/ActorId/Generation/Segment 실행 키 안에서만 보간한다. 결과의 ActorId는 기존 식별자를 유지하고 ExecutionKey에 실행 구간을 표시한다. Generation이 없는 기존 CSV는 기존 방식으로 처리한다. 상세 설정은 [다중 Enemy 가이드](../../docs/Legacy/M1/M1_MultiEnemy_Spline_설정.md)를 참고한다.
 
 실험을 같은 조건으로 반복 실행하고, Recorder가 남긴 CSV에서 오차와 회복 시간 같은 지표를 계산하는 스크립트다. CSV 형식은 아직 Recorder가 없어서 임시로 정했고, Recorder 구현에 맞춰 고친다.
 

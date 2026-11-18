@@ -44,6 +44,11 @@ def numeric(row, field, default=-1.0):
 def collect(roots: list[Path], output: Path, clock="wall") -> list[Path]:
     roots = [recording_path(root) for root in roots]
     output = recording_path(output)
+    from task_readme import describe_task
+    describe_task(output, 'Native 기록 수집', '역할별 Recorder 기록을 분석용 CSV로 변환',
+                  f'collect_recordings.py roots={roots} clock={clock}',
+                  ['<실행식별자>/T<Trial>/: 수집한 분석 입력', 'run_meta.json: 원본 실행 조건',
+                   '*.csv: 시계 정렬 후 수집한 기록. 원본 manifest/CSV는 별도 보관'])
     manifests = {}
     for root in roots:
         for path in root.rglob("manifest.json"):

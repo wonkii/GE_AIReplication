@@ -39,6 +39,8 @@ public:
 	float GetPreparedNetFrequency() const { return PreparedNetHz; }
 	float GetPreparedMinNetFrequency() const { return PreparedMinNetHz; }
 	bool SuspendForImpulse(float Seconds);
+	void BeginCombatSuspension(int32 ReactionId);
+	void EndCombatSuspension(int32 ReactionId);
 	void Complete();
 	bool Owns(const ASharpExperimentManager* InManager, const ASharpSplinePath* InPath) const;
 	ASharpExperimentManager* GetManager() const { return Manager.Get(); }
@@ -56,6 +58,9 @@ private:
 	int32 PreparedActorId = 0;
 	FTimerHandle ImpulseResumeTimer;
 	void CancelImpulseResume();
+	void AbortCombatSuspension();
+	bool bImpulseSuspended = false, bResumeAfterCombat = false;
+	int32 CombatReactionId = 0, CombatGeneration = 0, CombatSegment = 0;
 	float OriginalNetHz = 0, OriginalMinNetHz = 0;
 	float PreparedNetHz = 0, PreparedMinNetHz = 0;
 	bool bBaselineOverridden = false;

@@ -17,6 +17,7 @@ public:
 	void QueueSnapshot(const FSharpMoveSnapshot& Snapshot);
 	void NotifyCorrection(const FVector& OldMeshPosition);
 	void HandleSessionChanged();
+	void HandleCombatChanged();
 	bool OwnsPresentation() const { return bOwnsPresentation; }
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Sharp Prediction") bool bPredicting = false;
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Sharp Prediction") FString LastStopReason;
@@ -29,6 +30,7 @@ private:
 	FSharpMoveSnapshot Pending, Active;
 	bool bPending = false, bOwnsPresentation = false;
 	int32 Generation = 0, Segment = 0;
+	double CombatSnapshotCutoff = -1;
 	ENetworkSmoothingMode OriginalSmoothing = ENetworkSmoothingMode::Exponential;
 	FVector BaseRelativePosition, DisplayPosition, ConvergenceOffset, BlendStart;
 	float ConvergenceElapsed = 0, BlendElapsed = 0;

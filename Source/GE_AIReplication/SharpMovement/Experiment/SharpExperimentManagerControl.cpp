@@ -28,6 +28,21 @@ bool ASharpExperimentManager::IsRegistered(const ASharpSplinePath* Path) const
 	return Paths.Contains(Path);
 }
 
+void ASharpExperimentManager::SetServerOnlyMovementDemo(bool bEnabled)
+{
+	if (!HasAuthority()) { return; }
+	bServerOnlyMovementDemo = bEnabled;
+	for (const ASharpSplinePath* Path : Paths)
+	{
+		ASharpEnemyCharacter* Enemy = IsValid(Path) ? Path->AssignedEnemy.Get() : nullptr;
+		if (IsValid(Enemy) && Enemy->GetIsReplicated())
+		{
+			Enemy->SetReplicateMovement(!bEnabled);
+			Enemy->ForceNetUpdate();
+		}
+	}
+}
+
 bool ASharpExperimentManager::PrepareGroup(bool bReset)
 {
 	FString Reason;

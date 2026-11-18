@@ -61,6 +61,8 @@ public:
 	bool ResetEnemy(ASharpSplinePath* Path);
 	bool IsRegistered(const ASharpSplinePath* Path) const;
 	void RefreshSummary();
+	void SetServerOnlyMovementDemo(bool bEnabled);
+	bool IsServerOnlyMovementDemo() const { return bServerOnlyMovementDemo; }
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Sharp Experiment")
 	TObjectPtr<USharpExperimentSettings> Settings;
@@ -95,6 +97,7 @@ protected:
 	void OnRep_Identity();
 
 private:
+	bool bServerOnlyMovementDemo = false;
 	void LogStartup() const;
 	bool CanControl();
 	bool PrepareGroup(bool bReset);
