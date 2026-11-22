@@ -8,6 +8,7 @@
 #include "GameFramework/GameStateBase.h"
 #include "MotionWarpingComponent.h"
 #include "ReactionPlanarWarpModifier.h"
+#include "ReactionMultiPhaseWarpModifier.h"
 #include "ReactionEnvironmentComponent.h"
 #include "Net/UnrealNetwork.h"
 #include "TimerManager.h"
@@ -66,9 +67,11 @@ bool UHitReactionComponent::ReceiveCombatHit_Implementation(const FCombatHit& Hi
     State.Id++; State.bActive = true; State.Montage = Montage; State.ServerStartTime = GetWorld()->GetTimeSeconds();
     State.Direction = Direction; State.FacingYaw = ToSource.Rotation().Yaw;
     State.WarpTarget = {};
+    State.WarpPlan = {};
     if (const auto* Warp = Character->FindComponentByClass<UReactionWarpComponent>())
     {
         State.WarpTarget = Warp->Plan(*Character, *Montage, State.FacingYaw, State.Id);
+        State.WarpPlan = Warp->PlanMulti(*Character, *Montage, State.FacingYaw, State.Id, State.ServerStartTime);
     }
     Character->FlushNetDormancy();
     MulticastState(State);
@@ -83,17 +86,21 @@ bool UHitReactionComponent::ReceiveCombatHit_Implementation(const FCombatHit& Hi
 
 void UHitReactionComponent::MulticastState_Implementation(FCombatReactionState NewState)
 {
-    if (NewState.Id < State.Id) return;
+    if (NewState.Id < State.Id || (NewState.bActive && NewState.Id <= LastFinishedId)) return;
     State = NewState; ApplyState();
 }
 
-void UHitReactionComponent::OnRep_State() { ApplyState(); }
+void UHitReactionComponent::OnRep_State()
+{
+    if (State.bActive && State.Id <= LastFinishedId) State.bActive = false;
+    ApplyState();
+}
 
 void UHitReactionComponent::ApplyState()
 {
     if (!Character) Character = Cast<ACharacter>(GetOwner());
     if (!Character) return;
-    if (!State.bActive) { FinishLocal(); return; }
+    if (!State.bActive) { LastFinishedId = FMath::Max(LastFinishedId, State.Id); FinishLocal(); return; }
     if (State.Id <= LastPlayedId || !State.Montage) return;
     FinishLocal();
     LastPlayedId = State.Id;
@@ -104,6 +111,19 @@ void UHitReactionComponent::ApplyState()
     const float Age = Character->HasAuthority() ? 0.f : FMath::Max(0.f, float(Now - State.ServerStartTime));
     // Expired replicated state must not replay an old reaction on relevancy/late join.
     if (Age >= State.Montage->GetPlayLength()) return;
+    FHitWallReactionCandidate PlanCandidate;
+    if (State.WarpPlan.Result == EReactionWarpResult::Planned)
+    {
+        const auto* Warp = Character->FindComponentByClass<UReactionWarpComponent>();
+        FString Error;
+        if (!Warp || State.WarpPlan.ReactionId != State.Id || State.WarpPlan.ServerStartTime != State.ServerStartTime ||
+            !Warp->ValidateLocalPlan(State.WarpPlan, PlanCandidate, Error))
+        {
+            UE_LOG(LogTemp, Warning, TEXT("[ReactionWarp] Actor=%s Id=%d Role=%d PlanRejected=%s"),
+                *Character->GetName(),State.Id,int32(Character->GetLocalRole()),*Error);
+            return;
+        }
+    }
     auto* Movement = Character->GetCharacterMovement();
     bPreviousOrientToMovement = Movement->bOrientRotationToMovement;
     bPreviousDesiredRotation = Movement->bUseControllerDesiredRotation;
@@ -118,7 +138,22 @@ void UHitReactionComponent::ApplyState()
     // the mesh. CMC owns translation, root-motion replication and later corrections;
     // do not teleport to an old start position or lock yaw every client tick.
     Character->SetActorRotation(FRotator(0.f, State.FacingYaw, 0.f));
-    if (!State.WarpTarget.Name.IsNone())
+    if (State.WarpPlan.Result == EReactionWarpResult::Planned)
+    {
+        if (auto* Warping = Character->FindComponentByClass<UMotionWarpingComponent>())
+        {
+            auto* Modifier = NewObject<UReactionMultiPhaseWarpModifier>(Warping);
+            Modifier->Animation = ActiveMontage;
+            Modifier->EndTime = ActiveMontage->GetPlayLength();
+            Modifier->Plan = State.WarpPlan;
+            Modifier->Track = PlanCandidate.Trajectory;
+            // Start at Age; never consume the integral of the missed prefix.
+            Modifier->PreviousPosition = Modifier->CurrentPosition = Age;
+            Warping->AddModifier(Modifier);
+            ActiveWarpModifier = Modifier;
+        }
+    }
+    else if (!State.WarpTarget.Name.IsNone())
     {
         if (auto* Warping = Character->FindComponentByClass<UMotionWarpingComponent>())
         {
@@ -154,6 +189,9 @@ void UHitReactionComponent::ApplyState()
     Delegate.BindUObject(this, &ThisClass::ReactionEnded, State.Id);
     Anim->Montage_SetEndDelegate(Delegate, ActiveMontage);
     UE_LOG(LogTemp, Display, TEXT("[Combat] ReactionStart Target=%s Id=%d Role=%d Age=%.3f"), *Character->GetName(), State.Id, int32(Character->GetLocalRole()), Age);
+    UE_LOG(LogTemp, Display, TEXT("[ReactionWarpPeer] Actor=%s Id=%d Role=%d Mode=%d Result=%d Reason=%s Plan=%s Draft=%d Age=%.4f"),
+        *Character->GetName(),State.Id,int32(Character->GetLocalRole()),int32(State.WarpPlan.Mode),int32(State.WarpPlan.Result),
+        *State.WarpPlan.Reason,*State.WarpPlan.PlanHash,State.WarpPlan.bDraft,Age);
 }
 
 void UHitReactionComponent::SampleWarpMovement(float, FVector, FVector)

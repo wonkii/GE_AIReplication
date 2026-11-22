@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "SharpMovement/Measurement/SharpRecordingFiles.h"
+#include "Combat/Reaction/HitWallReactionLibrary.h"
 #include "HitWallProbeComponent.generated.h"
 
 class ACharacter;
@@ -76,4 +77,9 @@ private:
 	int32 TotalWallHitFrames = 0;
 	int32 TotalOverlapFrames = 0;
 	float MaxCapsuleRise = 0.f;
+    FVector PreviousLeftFoot = FVector::ZeroVector, PreviousRightFoot = FVector::ZeroVector;
+    bool bPreviousLeftContact = false, bPreviousRightContact = false;
+    double LeftContactTravel = 0., RightContactTravel = 0.;
+    TArray<FHitWallTrajectorySample> CurrentWarpTrack;
+    float WarpStartAssetTime = 0.f;
 };

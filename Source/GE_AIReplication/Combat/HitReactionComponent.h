@@ -32,6 +32,7 @@ struct FCombatReactionState
     // World yaw is resolved once on authority, never from a client's attacker transform.
     UPROPERTY() float FacingYaw = 0.f;
     UPROPERTY() FReactionWarpTarget WarpTarget;
+    UPROPERTY() FReactionWarpPlan WarpPlan;
 };
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FCombatReactionChanged, bool, bActive, int32, ReactionId);
@@ -54,6 +55,7 @@ public:
     virtual bool ReceiveCombatHit_Implementation(const FCombatHit& Hit) override;
     int32 GetReactionId() const { return State.Id; }
     int32 GetPlayedReactionId() const { return LastPlayedId; }
+    const FReactionWarpPlan& GetWarpPlan() const { return State.WarpPlan; }
     UFUNCTION(BlueprintPure, Category="Combat") ECombatHitDirection GetHitDirection() const { return State.Direction; }
     UFUNCTION(BlueprintPure, Category="Combat") float GetReactionFacingYaw() const { return State.FacingYaw; }
     virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
@@ -77,5 +79,6 @@ private:
     bool bPreviousOrientToMovement = false, bPreviousControllerYaw = false, bPreviousDesiredRotation = false;
     uint8 PreviousRootMotionMode = 0;
     int32 LastPlayedId = 0;
+    int32 LastFinishedId = 0;
     FTimerHandle SafetyTimer;
 };

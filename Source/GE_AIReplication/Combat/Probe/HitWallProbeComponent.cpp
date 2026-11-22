@@ -14,6 +14,10 @@
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
+#include "Combat/Reaction/ReactionWarpArtifacts.h"
+#include "HitWallProbeSubsystem.h"
+#include "Misc/FileHelper.h"
+#include "HAL/FileManager.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogHitWallProbe, Log, All);
 
@@ -193,6 +197,17 @@ void UHitWallProbeComponent::BeginReactionRecord(int32 ReactionId)
 	StartWorldTime = World->GetTimeSeconds();
 	PendingWallHits = 0; TotalWallHitFrames = 0; TotalOverlapFrames = 0; MaxCapsuleRise = 0.f;
 	PendingPawnHits = 0; TotalPawnHitFrames = 0; ReactionMontage.Reset();
+    bPreviousLeftContact=bPreviousRightContact=false; LeftContactTravel=RightContactTravel=0.;
+    ReactionWarpArtifacts::SavePlan(Files.GetDirectory(),FString::Printf(TEXT("plan-%d"),ReactionId),HitReaction->GetWarpPlan());
+    CurrentWarpTrack.Reset(); WarpStartAssetTime=0.f;
+    const auto& WarpPlan=HitReaction->GetWarpPlan();
+    if (const auto* Library=WarpPlan.Library.LoadSynchronous())
+        for (const auto& C : Library->Candidates) if (C.CandidateId==WarpPlan.CandidateId) CurrentWarpTrack=C.Trajectory;
+    if (!Character->HasAuthority())
+    {
+        const auto* GameState=World->GetGameState();
+        if (GameState) WarpStartAssetTime=FMath::Max(0.f,float(GameState->GetServerWorldTimeSeconds()-WarpPlan.ServerStartTime));
+    }
 
 	// The montage retreats along local -X after the actor turns to FacingYaw
 	// (HitReactionComponent contract). Sweep that way once to find the wall.
@@ -329,6 +344,38 @@ void UHitWallProbeComponent::WriteFrame(float DeltaTime)
 		FSharpRecordingFiles::Csv(OverlapActor),
 		FString::FromInt(PendingPawnHits), FSharpRecordingFiles::Csv(PendingPawnActor), Feet}, TEXT(","));
 	Files.Add(TEXT("hit_frames.csv"), HitWallProbe::FrameHeader, Row);
+    const auto& Plan=HitReaction->GetWarpPlan();
+    const auto FootContact=[&](const TCHAR* Name,FVector& Position)
+    {
+        if (Mesh->GetBoneIndex(FName(Name))==INDEX_NONE) return false;
+        Position=Mesh->GetBoneLocation(FName(Name));
+        FHitResult Hit; FCollisionQueryParams Query(SCENE_QUERY_STAT(ReactionWarpFootContact),false,Character);
+        return World->LineTraceSingleByChannel(Hit,Position+FVector(0.,0.,3.),Position-FVector(0.,0.,8.),ECC_Visibility,Query) &&
+            Movement->IsWalkable(Hit) && FMath::Abs(Position.Z-Hit.ImpactPoint.Z)<=6.;
+    };
+    FVector Left=FVector::ZeroVector,Right=FVector::ZeroVector;
+    const bool LeftContact=FootContact(TEXT("ball_l"),Left),RightContact=FootContact(TEXT("ball_r"),Right);
+    if (LeftContact && bPreviousLeftContact) LeftContactTravel+=FVector::Dist2D(Left,PreviousLeftFoot);
+    if (RightContact && bPreviousRightContact) RightContactTravel+=FVector::Dist2D(Right,PreviousRightFoot);
+    PreviousLeftFoot=Left; PreviousRightFoot=Right; bPreviousLeftContact=LeftContact; bPreviousRightContact=RightContact;
+    const FVector PlannedOffset=ReactionWarp::Integrate(CurrentWarpTrack,Plan.Keys,WarpStartAssetTime,FMath::Max(WarpStartAssetTime,float(MontagePos)));
+    const FQuat RootFacing=FRotator(0.f,CurrentFacingYaw,0.f).Quaternion()*Character->GetBaseRotationOffset();
+    const FVector PlannedPosition=StartLocation+RootFacing.RotateVector(PlannedOffset);
+    const FString WarpHeader=TEXT("reaction_id,role,actor,plan_hash,mode,result,draft,asset_time,scale,server_time,cap_x,cap_y,cap_z,wall_hits,overlap,left_x,left_y,left_z,left_trace_contact,left_contact_travel_cm,right_x,right_y,right_z,right_trace_contact,right_contact_travel_cm,planned_x,planned_y,planned_z,plan_position_error_cm");
+    const FString WarpRow=FString::Join(TArray<FString>{FString::FromInt(CurrentReactionId),RoleName(),FSharpRecordingFiles::Csv(Character->GetName()),Plan.PlanHash,
+        StaticEnum<EReactionWarpMode>()->GetNameStringByValue(int64(Plan.Mode)),StaticEnum<EReactionWarpResult>()->GetNameStringByValue(int64(Plan.Result)),
+        Plan.bDraft ? TEXT("1") : TEXT("0"),HitWallProbe::F(MontagePos),HitWallProbe::F(ReactionWarp::ScaleAt(Plan.Keys,MontagePos)),HitWallProbe::F(ServerTime),
+        HitWallProbe::V3(Cap),FString::FromInt(PendingWallHits),bOverlap ? TEXT("1") : TEXT("0"),
+        HitWallProbe::V3(Left),LeftContact ? TEXT("1") : TEXT("0"),HitWallProbe::F(LeftContactTravel),
+        HitWallProbe::V3(Right),RightContact ? TEXT("1") : TEXT("0"),HitWallProbe::F(RightContactTravel),
+        HitWallProbe::V3(PlannedPosition),CurrentWarpTrack.IsEmpty() ? FString() : HitWallProbe::F(FVector::Dist2D(PlannedPosition,Cap))},TEXT(","));
+    Files.Add(TEXT("runtime_samples.csv"),WarpHeader,WarpRow);
+    if (auto* Sub=World->GetSubsystem<UHitWallProbeSubsystem>(); Sub && Sub->IsRunning() && !Sub->GetWarpTaskDirectory().IsEmpty())
+    {
+        const FString Path=Sub->GetWarpTaskDirectory()/TEXT("runtime_samples.csv");
+        const FString Text=(IFileManager::Get().FileExists(*Path) ? FString() : WarpHeader+TEXT("\n"))+WarpRow+TEXT("\n");
+        FFileHelper::SaveStringToFile(Text,*Path,FFileHelper::EEncodingOptions::AutoDetect,&IFileManager::Get(),FILEWRITE_Append);
+    }
 
 	++FrameCount;
 	if (PendingPawnHits > 0) { ++TotalPawnHitFrames; }
