@@ -13,7 +13,8 @@
 #include "GE_AIReplication.h"
 #include "Combat/MeleeAttackComponent.h"
 
-AGE_AIReplicationCharacter::AGE_AIReplicationCharacter()
+AGE_AIReplicationCharacter::AGE_AIReplicationCharacter(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
 {
 	MeleeAttack = CreateDefaultSubobject<UMeleeAttackComponent>(TEXT("MeleeAttack"));
 	// Set size for collision capsule

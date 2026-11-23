@@ -53,7 +53,7 @@ protected:
 public:
 
 	/** Constructor */
-	AGE_AIReplicationCharacter();	
+	AGE_AIReplicationCharacter(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());	
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Combat")
 	TObjectPtr<UMeleeAttackComponent> MeleeAttack;

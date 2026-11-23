@@ -1,0 +1,55 @@
+#pragma once
+#include "CoreMinimal.h"
+#include "Subsystems/WorldSubsystem.h"
+#include "../SharpMovement/Measurement/SharpRecordingFiles.h"
+#include "RubberbandRecordingSubsystem.generated.h"
+
+class ACharacter;
+class APawn;
+
+/**
+ * Per-world recorder for the rubber-banding mitigation (B) experiments. One instance per server/client world,
+ * so it works the same in separate processes and in single-process PIE.
+ *
+ * Console variables (set the same values in every process, e.g. -ExecCmds="rb.RunId R1, rb.Condition L200, rb.Record 1"):
+ *   rb.Record 0|1, rb.RunId, rb.Condition, rb.ClientId (optional),
+ *   rb.Smooth.Mode -1|0|1|2 (keep|Disabled|Linear|Exponential), rb.Smooth.LocationTime (<=0 keeps the asset value).
+ * Output: Saved/Experiments/Rubberband/<RunId>/<Condition>/
+ *   server_samples.csv, client_<Id>_samples.csv, client_<Id>_corrections.csv, <role>_script.csv, <role>_meta.json
+ * Time columns: HostTime = FPlatformTime::Seconds() (shared by processes on one PC), ServerTime = (estimated) server world time.
+ */
+UCLASS()
+class GE_AIREPLICATION_API URubberbandRecordingSubsystem : public UTickableWorldSubsystem
+{
+	GENERATED_BODY()
+public:
+	virtual void Tick(float DeltaTime) override;
+	virtual TStatId GetStatId() const override;
+	virtual void Deinitialize() override;
+
+	void RecordCorrection(const ACharacter& Character, const FVector& OldLocation, const FVector& NewLocation, float Speed, float ServerStateTime);
+	void RecordScriptEvent(const APawn& Pawn, const FString& Event, int32 Loop, int32 StepIndex, FName StepName);
+	bool IsRecording() const { return bRecording; }
+
+protected:
+	virtual bool DoesSupportWorldType(const EWorldType::Type WorldType) const override;
+
+private:
+	struct FCorrectionState { int32 Count = 0; float LastDistance = 0.f; };
+	FSharpRecordingFiles Files;
+	TMap<int32, FCorrectionState> Corrections; // by PlayerId
+	FString RunId, Condition, RoleTag;
+	/** RunId/Condition that failed to open or write; not retried until the labels change. */
+	FString BlockedKey;
+	double FlushTime = 0;
+	bool bRecording = false;
+
+	void StartRecording();
+	void StopRecording(const FString& Reason);
+	void ApplySmoothingOverrides() const;
+	void SampleCharacters(float DeltaTime);
+	void WriteMeta(const FString& Outcome) const;
+	bool IsServer() const;
+	FString ClientId() const;
+	double ServerTime() const;
+};
