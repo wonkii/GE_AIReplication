@@ -175,7 +175,9 @@ def analyse_condition(folder: Path, args):
         t, pid = f(row, "HostTime"), row.get("PlayerId")
         if t is not None and pid is not None:
             tracks[pid].append((t, vec(row, "Pos")))
-    tracks = {pid: Track(s) for pid, s in tracks.items()}
+    # Score only characters that actually moved (the scripted Client B), not the idle viewer.
+    tracks = {pid: Track(s) for pid, s in tracks.items()
+              if max(norm(sub(p, s[0][1])) for _, p in s) >= args.min_travel}
     condition = (server[0].get("Condition") if server else None) or folder.name
     run_id = (server[0].get("RunId") if server else None) or folder.parent.name
     rows, curves = [], []
@@ -226,6 +228,19 @@ def markdown(rows):
     return "\n".join(lines)
 
 
+def matrix(rows, key, label):
+    modes = ["Disabled", "Linear", "Exponential"]
+    conds = sorted({r["Condition"] for r in rows})
+    lines = [f"### {label}", "", "| 조건 | " + " | ".join(modes) + " |", "|---|" + "---|" * len(modes)]
+    for c in conds:
+        cells = []
+        for m in modes:
+            vals = [r.get(key) for r in rows if r["Condition"] == c and r["SmoothingMode"] == m and r.get(key) is not None]
+            cells.append(str(round(statistics.fmean(vals), 3)) if vals else "")
+        lines.append(f"| {c} | " + " | ".join(cells) + " |")
+    return "\n".join(lines)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("roots", nargs="+", type=Path, help="RunId or Condition folders")
@@ -236,9 +251,13 @@ def main():
     ap.add_argument("--settle-max", type=float, default=2.0)
     ap.add_argument("--max-shift", type=float, default=0.6)
     ap.add_argument("--shift-step", type=float, default=0.01)
+    ap.add_argument("--batch", help="only RunIds starting with this id (rb.Batch prints it)")
+    ap.add_argument("--min-travel", type=float, default=100.0, help="skip players that moved less than this on the server (cm)")
     args = ap.parse_args()
 
     folders = sorted({p.parent for root in args.roots for p in recording_path(root).rglob("server_samples.csv")})
+    if args.batch:
+        folders = [p for p in folders if p.parent.name.startswith(args.batch)]
     if not folders:
         raise SystemExit("server_samples.csv not found under the given roots")
     out = args.out or Path(__file__).resolve().parents[2] / "Saved" / "Tasks" / task_id("rubberband-metrics")
@@ -253,8 +272,13 @@ def main():
         curves += b
     write_csv(out / "summary.csv", rows)
     write_csv(out / "shift_curve.csv", curves)
-    (out / "report.md").write_text("# Rubberband B 지표\n\n" + markdown(rows) + "\n", encoding="utf-8")
-    print(markdown(rows))
+    views = "\n\n".join(matrix(rows, k, l) for k, l in [
+        ("PopPerMin", "튐/분 (낮을수록 좋음)"), ("SettleMean", "보정 후 수렴 시간 s (끌려감)"),
+        ("GapMean", "같은 시각 화면-서버 차이 cm"), ("BestShiftSec", "추정 지연 s (조건과 맞는지 확인)"),
+        ("GapAfterShift", "지연 뺀 뒤 남는 차이 cm"), ("NoSmooth", "순간이동 횟수")])
+    text = "# Rubberband B 지표\n\n" + views + "\n\n## 전체 행\n\n" + markdown(rows) + "\n"
+    (out / "report.md").write_text(text, encoding="utf-8")
+    print(views)
     print(f"\n-> {out}")
 
 
