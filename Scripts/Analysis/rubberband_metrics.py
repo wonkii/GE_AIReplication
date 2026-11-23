@@ -30,7 +30,8 @@ from pathlib import Path
 from recording_paths import recording_path
 from task_readme import describe_task, task_id
 
-MODE_NAMES = {0: "Disabled", 1: "Linear", 2: "Exponential", 3: "Replay"}
+MODE_NAMES = {0: "Dis", 1: "Lin", 2: "Exp", 3: "Replay"}
+VARIANT_ORDER = ["Dis", "Lin", "Exp", "Exp-0.15", "Exp-0.25", "Ada-T", "Ada-R", "Ada"]
 
 
 def read_csv(path: Path) -> list[dict[str, str]]:
@@ -97,6 +98,46 @@ class Track:
         return (p0[0] + (p1[0] - p0[0]) * a, p0[1] + (p1[1] - p0[1]) * a, p0[2] + (p1[2] - p0[2]) * a)
 
 
+def window_speed(at, time, window=0.05):
+    a, b = at(time - window), at(time)
+    return None if a is None or b is None else norm(sub(b, a)) / window
+
+
+def stop_lags(track, samples, moving=400.0, still=20.0, max_wait=1.0):
+    """Server stop events (50 ms windowed speed falls from > moving to < still cm/s) and how long the shown
+    character keeps moving after each (same test on the visual path). Includes network delay."""
+    times = [s["t"] for s in samples]
+
+    def visual_at(time):
+        i = bisect.bisect_left(times, time)
+        if i == 0 or i >= len(times):
+            return None
+        t0, t1 = times[i - 1], times[i]
+        if t1 - t0 > 0.2:
+            return None
+        a = (time - t0) / (t1 - t0)
+        p0, p1 = samples[i - 1]["visual"], samples[i]["visual"]
+        return tuple(p0[k] + (p1[k] - p0[k]) * a for k in range(3))
+
+    lags, was_moving, t = [], False, track.t[0] + 0.05
+    while t < track.t[-1]:
+        v = window_speed(track.at, t)
+        if v is not None:
+            if v > moving:
+                was_moving = True
+            elif v < still and was_moving:
+                was_moving = False
+                u = t
+                while u < t + max_wait:
+                    w = window_speed(visual_at, u)
+                    if w is not None and w < still:
+                        lags.append(u - t)
+                        break
+                    u += 0.005
+        t += 0.01
+    return lags
+
+
 def shift_curve(track, samples, max_shift, step):
     curve = []
     for k in range(int(round(max_shift / step)) + 1):
@@ -148,23 +189,29 @@ def analyse_player(samples, track, corrections, args):
                 break
             i += 1
     span = samples[-1]["t"] - samples[0]["t"] if len(samples) > 1 else 0.0
+    lags = stop_lags(track, samples)
     dists = [c["dist"] for c in corrections]
-    modes = Counter(s["mode"] for s in samples)
-    times_used = Counter(round(s["smooth_time"], 4) for s in samples)
+    variants = Counter(s["variant"] for s in samples)
+    jit = [s["jitter"] for s in samples if s["jitter"] is not None and s["jitter"] >= 0]
+    times_used = [s["smooth_time"] for s in samples]
     return {
-        "SmoothingMode": MODE_NAMES.get(modes.most_common(1)[0][0], "?") if modes else None,
-        "SmoothLocationTime": times_used.most_common(1)[0][0] if times_used else None,
+        "SmoothingMode": variants.most_common(1)[0][0] if variants else None,
+        "SmoothLocationTime": r(mean(times_used), 3),
+        "SmoothTimeP95": r(pct(times_used, 0.95), 3),
+        "JitterMean": r(mean(jit), 4),
+        "RateLimitedPct": r(100.0 * sum(1 for s in samples if s["limited"]) / len(samples), 1),
         "DurationSec": r(span),
         "Frames": len(samples),
         "GapMean": r(mean(gaps)), "GapP95": r(pct(gaps, 0.95)), "GapMax": r(max(gaps) if gaps else None),
         "BestShiftSec": r(best[0], 3), "GapAfterShift": r(best[1]),
         "PopCount": pops, "PopPerMin": r(pops / span * 60 if span else None),
-        "SpeedSpikes": spikes,
+        "SpeedSpikes": spikes, "SpikePerMin": r(spikes / span * 60 if span else None),
         "AccelP95": r(pct(accels, 0.95), 0), "JerkP95": r(pct(jerks, 0.95), 0),
         "Corrections": len(corrections), "CorrPerSec": r(len(corrections) / span if span else None),
         "CorrDistMean": r(mean(dists)), "CorrDistP95": r(pct(dists, 0.95)), "CorrDistMax": r(max(dists) if dists else None),
         "NoSmooth": sum(1 for c in corrections if c["no_smooth"]),
         "SettleMean": r(mean(settle), 3), "SettleP95": r(pct(settle, 0.95), 3),
+        "StopLagMs": r(statistics.median(lags) * 1000, 0) if lags else None, "Stops": len(lags),
     }, curve
 
 
@@ -192,7 +239,9 @@ def analyse_condition(folder: Path, args):
                 continue
             per_player[row["PlayerId"]].append({
                 "t": t, "visual": vec(row, "Visual"), "capsule": vec(row, "Capsule"),
-                "mode": int(f(row, "SmoothingMode", -1)), "smooth_time": f(row, "SmoothLocationTime", -1.0)})
+                "mode": int(f(row, "SmoothingMode", -1)), "smooth_time": f(row, "SmoothLocationTime", -1.0),
+                "variant": row.get("Variant") or MODE_NAMES.get(int(f(row, "SmoothingMode", -1)), "?"),
+                "jitter": f(row, "Jitter"), "limited": row.get("RateLimited") == "1"})
         corr_by_player = defaultdict(list)
         for row in read_csv(folder / f"client_{client}_corrections.csv"):
             corr_by_player[row["PlayerId"]].append({
@@ -229,14 +278,20 @@ def markdown(rows):
 
 
 def matrix(rows, key, label):
-    modes = ["Disabled", "Linear", "Exponential"]
+    present = {r["SmoothingMode"] for r in rows}
+    modes = [m for m in VARIANT_ORDER if m in present] + sorted(present - set(VARIANT_ORDER))
     conds = sorted({r["Condition"] for r in rows})
     lines = [f"### {label}", "", "| 조건 | " + " | ".join(modes) + " |", "|---|" + "---|" * len(modes)]
     for c in conds:
         cells = []
         for m in modes:
             vals = [r.get(key) for r in rows if r["Condition"] == c and r["SmoothingMode"] == m and r.get(key) is not None]
-            cells.append(str(round(statistics.fmean(vals), 3)) if vals else "")
+            if not vals:
+                cells.append("")
+            elif len(vals) == 1:
+                cells.append(str(round(vals[0], 3)))
+            else:
+                cells.append(f"{statistics.fmean(vals):.3g} ± {statistics.stdev(vals):.2g} (n={len(vals)})")
         lines.append(f"| {c} | " + " | ".join(cells) + " |")
     return "\n".join(lines)
 
@@ -273,9 +328,13 @@ def main():
     write_csv(out / "summary.csv", rows)
     write_csv(out / "shift_curve.csv", curves)
     views = "\n\n".join(matrix(rows, k, l) for k, l in [
-        ("PopPerMin", "튐/분 (낮을수록 좋음)"), ("SettleMean", "보정 후 수렴 시간 s (끌려감)"),
+        ("SpikePerMin", "튐/분: 화면 속도가 최대 이동 속도의 1.5배를 넘은 프레임 (낮을수록 좋음)"),
+        ("StopLagMs", "멈춤 반응 지연 ms: 서버에서 멈춘 뒤 화면이 멈출 때까지 (중앙값, 네트워크 지연 포함)"),
+        ("PopPerMin", "참고: 서버 이동과 8cm 넘게 다른 프레임/분 (프레임 이동량과 비슷해 잡음이 큼)"), ("SettleMean", "보정 후 수렴 시간 s (끌려감)"),
         ("GapMean", "같은 시각 화면-서버 차이 cm"), ("BestShiftSec", "추정 지연 s (조건과 맞는지 확인)"),
-        ("GapAfterShift", "지연 뺀 뒤 남는 차이 cm"), ("NoSmooth", "순간이동 횟수")])
+        ("GapAfterShift", "지연 뺀 뒤 남는 차이 cm"), ("JerkP95", "Jerk p95 (부드러움, 낮을수록 좋음)"),
+        ("JitterMean", "추정 지터 s (M1)"), ("SmoothLocationTime", "평균 스무딩 시간 s"),
+        ("RateLimitedPct", "속도 제한이 걸린 프레임 %"), ("NoSmooth", "순간이동 횟수")])
     text = "# Rubberband B 지표\n\n" + views + "\n\n## 전체 행\n\n" + markdown(rows) + "\n"
     (out / "report.md").write_text(text, encoding="utf-8")
     print(views)

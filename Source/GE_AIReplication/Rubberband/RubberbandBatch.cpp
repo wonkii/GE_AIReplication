@@ -13,9 +13,15 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogRubberbandBatch, Log, All);
 
-namespace
+// Named namespace: unity builds merge anonymous namespaces of neighbouring .cpp files.
+namespace RubberbandBatchDetail
 {
-	struct FBatchJob { FString Condition; int32 LagMin = 0, LagMax = 0, Loss = 0, Mode = 2; };
+	struct FBatchJob
+	{
+		FString Condition; int32 LagMin = 0, LagMax = 0, Loss = 0, Mode = 2;
+		bool bUseTime = true, bUseRate = true;
+		FString SmoothTime; // empty = batch default
+	};
 
 	enum class EPhase : uint8 { Apply, Arm, Running, Tail };
 
@@ -33,10 +39,27 @@ namespace
 	};
 	TUniquePtr<FBatchState> Batch;
 
-	const TCHAR* ModeName(int32 Mode)
+	/** Same labels as the recorder's Variant column: Dis, Lin, Exp, Exp-0.15, Ada, Ada-T, Ada-R. */
+	FString VariantName(const FBatchJob& Job, const FString& DefaultTime)
 	{
-		static const TCHAR* Names[] = { TEXT("Dis"), TEXT("Lin"), TEXT("Exp") };
-		return Mode >= 0 && Mode <= 2 ? Names[Mode] : TEXT("Keep");
+		if (Job.Mode == 3) { return Job.bUseTime && Job.bUseRate ? TEXT("Ada") : Job.bUseTime ? TEXT("Ada-T") : Job.bUseRate ? TEXT("Ada-R") : TEXT("Ada-0"); }
+		if (Job.Mode == 0) { return TEXT("Dis"); }
+		const FString Name = Job.Mode == 1 ? TEXT("Lin") : Job.Mode == 2 ? TEXT("Exp") : TEXT("Keep");
+		const float Time = FCString::Atof(*(Job.SmoothTime.IsEmpty() ? DefaultTime : Job.SmoothTime));
+		return FMath::IsNearlyEqual(Time, 0.06f, 0.001f) || Time <= 0.f ? Name : FString::Printf(TEXT("%s-%.2f"), *Name, Time);
+	}
+
+	/** Mode token: 0|1|2|3, 3t = adaptive time only, 3r = rate limit only, optional @time (e.g. 2@0.15). */
+	bool ParseMode(const FString& Token, FBatchJob& Job)
+	{
+		FString Head = Token, Time;
+		if (Token.Split(TEXT("@"), &Head, &Time)) { Job.SmoothTime = Time; }
+		if (Head.IsEmpty() || !FChar::IsDigit(Head[0])) { return false; }
+		Job.Mode = FCString::Atoi(*Head.Left(1));
+		const FString Suffix = Head.Mid(1).ToLower();
+		Job.bUseTime = Suffix != TEXT("r");
+		Job.bUseRate = Suffix != TEXT("t");
+		return Job.Mode >= 0 && Job.Mode <= 3;
 	}
 
 	void SetVariable(const TCHAR* Name, const FString& Value)
@@ -95,7 +118,7 @@ namespace
 		Batch.Reset();
 	}
 
-	void Step()
+	void BatchStep()
 	{
 		UWorld* World = Batch ? Batch->World.Get() : nullptr;
 		URubberbandInputScriptComponent* Script = Batch ? Batch->Script.Get() : nullptr;
@@ -112,9 +135,11 @@ namespace
 			const FBatchJob& Job = Batch->Jobs[Batch->Index];
 			const int32 Viewers = ApplyEmulation(World, Job);
 			SetVariable(TEXT("rb.Smooth.Mode"), FString::FromInt(Job.Mode));
-			SetVariable(TEXT("rb.Smooth.LocationTime"), Batch->SmoothTime);
+			SetVariable(TEXT("rb.Smooth.LocationTime"), Job.SmoothTime.IsEmpty() ? Batch->SmoothTime : Job.SmoothTime);
+			SetVariable(TEXT("rb.Ada.UseTime"), Job.bUseTime ? TEXT("1") : TEXT("0"));
+			SetVariable(TEXT("rb.Ada.UseRate"), Job.bUseRate ? TEXT("1") : TEXT("0"));
 			UE_LOG(LogRubberbandBatch, Display, TEXT("rb.Batch [%d/%d] %s %s: incoming lag %d-%d ms loss %d%% on %d viewer(s)"),
-				Batch->Index + 1, Batch->Jobs.Num(), *Job.Condition, ModeName(Job.Mode), Job.LagMin, Job.LagMax, Job.Loss, Viewers);
+				Batch->Index + 1, Batch->Jobs.Num(), *Job.Condition, *VariantName(Job, Batch->SmoothTime), Job.LagMin, Job.LagMax, Job.Loss, Viewers);
 			if (Viewers == 0) { Finish(TEXT("No other client window (use Play As Client, 2 players, single process)")); return; }
 			Enter(EPhase::Arm);
 			return;
@@ -125,7 +150,7 @@ namespace
 			{
 				const FBatchJob& Job = Batch->Jobs[Batch->Index];
 				SetVariable(TEXT("rb.Condition"), Job.Condition);
-				SetVariable(TEXT("rb.RunId"), Batch->BatchId + TEXT("_") + ModeName(Job.Mode));
+				SetVariable(TEXT("rb.RunId"), Batch->BatchId + TEXT("_") + VariantName(Job, Batch->SmoothTime));
 				SetVariable(TEXT("rb.Record"), TEXT("1"));
 			}
 			Enter(EPhase::Running);
@@ -158,7 +183,8 @@ namespace
 
 	FAutoConsoleCommandWithWorldAndArgs BatchCommand(TEXT("rb.Batch"),
 		TEXT("Run all conditions x smoothing modes in one go (single-process PIE, typed in the moving client's window).\n")
-		TEXT("rb.Batch [Loops=3] [Conditions=N0,L100,L200,L300,J50-150,J100-300,L200-P3] [Modes=0,1,2] [SmoothTime=0.06]"),
+		TEXT("rb.Batch [Loops=3] [Conditions=N0,L100,L200,L300,J50-150,J100-300,L200-P3] [Modes=0,1,2] [SmoothTime=0.06]\n")
+		TEXT("Modes: 0 Dis, 1 Lin, 2 Exp, 3 Ada (3t time only, 3r rate only), @time per mode e.g. 2@0.15"),
 		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
 		{
 			if (Batch) { UE_LOG(LogRubberbandBatch, Warning, TEXT("rb.Batch already running (rb.Batch.Stop to cancel)")); return; }
@@ -176,14 +202,19 @@ namespace
 			{
 				FBatchJob Parsed;
 				if (!ParseCondition(Name, Parsed)) { UE_LOG(LogRubberbandBatch, Warning, TEXT("rb.Batch: unknown condition '%s' (N0, L200, J100-300, L200-P3)"), *Name); return; }
-				for (const FString& Mode : Modes) { FBatchJob Job = Parsed; Job.Mode = FCString::Atoi(*Mode); State->Jobs.Add(Job); }
+				for (const FString& Mode : Modes)
+				{
+					FBatchJob Job = Parsed;
+					if (!ParseMode(Mode, Job)) { UE_LOG(LogRubberbandBatch, Warning, TEXT("rb.Batch: unknown mode '%s' (0,1,2,3,3t,3r,2@0.15)"), *Mode); return; }
+					State->Jobs.Add(Job);
+				}
 			}
 			State->World = World; State->Script = Script;
 			State->BatchId = FDateTime::Now().ToString(TEXT("B%m%d-%H%M"));
 			State->PhaseStart = World->GetRealTimeSeconds();
 			Batch = MoveTemp(State);
 			SetVariable(TEXT("rb.Record"), TEXT("0"));
-			World->GetTimerManager().SetTimer(Batch->Timer, FTimerDelegate::CreateStatic(&Step), 0.1f, true);
+			World->GetTimerManager().SetTimer(Batch->Timer, FTimerDelegate::CreateStatic(&BatchStep), 0.1f, true);
 			UE_LOG(LogRubberbandBatch, Display, TEXT("rb.Batch %s: %d runs x %d loops (about %.0f min)"),
 				*Batch->BatchId, Batch->Jobs.Num(), Batch->Loops, Batch->Jobs.Num() * (Batch->Loops * 17.0 + 5.0) / 60.0);
 		}));

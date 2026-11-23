@@ -13,7 +13,8 @@ class APawn;
  *
  * Console variables (set the same values in every process, e.g. -ExecCmds="rb.RunId R1, rb.Condition L200, rb.Record 1"):
  *   rb.Record 0|1, rb.RunId, rb.Condition, rb.ClientId (optional),
- *   rb.Smooth.Mode -1|0|1|2 (keep|Disabled|Linear|Exponential), rb.Smooth.LocationTime (<=0 keeps the asset value).
+ *   rb.Smooth.Mode -1|0|1|2|3 (keep|Disabled|Linear|Exponential|Adaptive), rb.Smooth.LocationTime (<=0 keeps; T0 for Adaptive),
+ *   rb.Ada.UseTime 0|1, rb.Ada.UseRate 0|1, rb.Ada.Gain/DeadZone/MaxTime/CatchUpSpeed/MaxOffset (<0 keeps the component value).
  * Output: Saved/Experiments/Rubberband/<RunId>/<Condition>/
  *   server_samples.csv, client_<Id>_samples.csv, client_<Id>_corrections.csv, <role>_script.csv, <role>_meta.json
  * Time columns: HostTime = FPlatformTime::Seconds() (shared by processes on one PC), ServerTime = (estimated) server world time.
@@ -27,7 +28,8 @@ public:
 	virtual TStatId GetStatId() const override;
 	virtual void Deinitialize() override;
 
-	void RecordCorrection(const ACharacter& Character, const FVector& OldLocation, const FVector& NewLocation, float Speed, float ServerStateTime);
+	void RecordCorrection(const ACharacter& Character, const FVector& OldLocation, const FVector& NewLocation, float Speed, float ServerStateTime,
+		float Jitter, float ArrivalGap);
 	void RecordScriptEvent(const APawn& Pawn, const FString& Event, int32 Loop, int32 StepIndex, FName StepName);
 	bool IsRecording() const { return bRecording; }
 
