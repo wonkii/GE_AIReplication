@@ -12,8 +12,11 @@
 #include "InputActionValue.h"
 #include "GE_AIReplication.h"
 #include "Combat/MeleeAttackComponent.h"
+#include "Measurement/ObservedPlayerMovementComponent.h"
+#include "Measurement/RubberBandingCaptureSubsystem.h"
 
-AGE_AIReplicationCharacter::AGE_AIReplicationCharacter()
+AGE_AIReplicationCharacter::AGE_AIReplicationCharacter(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer.SetDefaultSubobjectClass<UObservedPlayerMovementComponent>(ACharacter::CharacterMovementComponentName))
 {
 	MeleeAttack = CreateDefaultSubobject<UMeleeAttackComponent>(TEXT("MeleeAttack"));
 	// Set size for collision capsule
@@ -50,6 +53,27 @@ AGE_AIReplicationCharacter::AGE_AIReplicationCharacter()
 
 	// Note: The skeletal mesh and anim blueprint references on the Mesh component (inherited from Character) 
 	// are set in the derived blueprint asset named ThirdPersonCharacter (to avoid direct content references in C++)
+}
+
+void AGE_AIReplicationCharacter::PreReplication(IRepChangedPropertyTracker& ChangedPropertyTracker)
+{
+	Super::PreReplication(ChangedPropertyTracker);
+	if (URubberBandingCaptureSubsystem* Capture = URubberBandingCaptureSubsystem::GetActive(GetWorld()))
+	{
+		Capture->Record(*this, TEXT("ReplicationPrepared"), GetActorLocation(), GetReplicatedMovement().Location);
+	}
+}
+
+void AGE_AIReplicationCharacter::OnRep_ReplicatedMovement()
+{
+	if (GetLocalRole() == ROLE_SimulatedProxy)
+	{
+		if (URubberBandingCaptureSubsystem* Capture = URubberBandingCaptureSubsystem::GetActive(GetWorld()))
+		{
+			Capture->Record(*this, TEXT("RemoteMovementNotified"), GetActorLocation(), GetReplicatedMovement().Location);
+		}
+	}
+	Super::OnRep_ReplicatedMovement();
 }
 
 void AGE_AIReplicationCharacter::BeginPlay()
@@ -124,6 +148,26 @@ void AGE_AIReplicationCharacter::Look(const FInputActionValue& Value)
 
 	// route the input
 	DoLook(LookAxisVector.X, LookAxisVector.Y);
+}
+
+void AGE_AIReplicationCharacter::ServerSetOwnerTestRun_Implementation(bool bRun, int32 TrialSerial, int32 TransitionId)
+{
+#if !UE_BUILD_SHIPPING
+	if (UObservedPlayerMovementComponent* Movement = Cast<UObservedPlayerMovementComponent>(GetCharacterMovement()))
+	{
+		Movement->ReceiveOwnerTestRun(bRun, TrialSerial, TransitionId);
+	}
+#endif
+}
+
+void AGE_AIReplicationCharacter::ServerSetManualSprint_Implementation(bool bHeld, uint32 ModeRevision)
+{
+#if !UE_BUILD_SHIPPING
+	if (UObservedPlayerMovementComponent* Movement = Cast<UObservedPlayerMovementComponent>(GetCharacterMovement()))
+	{
+		Movement->ReceiveManualSprint(bHeld, ModeRevision);
+	}
+#endif
 }
 
 void AGE_AIReplicationCharacter::DoMove(float Right, float Forward)

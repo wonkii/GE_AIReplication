@@ -53,7 +53,7 @@ protected:
 public:
 
 	/** Constructor */
-	AGE_AIReplicationCharacter();	
+	AGE_AIReplicationCharacter(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Combat")
 	TObjectPtr<UMeleeAttackComponent> MeleeAttack;
@@ -61,6 +61,8 @@ public:
 protected:
 
 	virtual void BeginPlay() override;
+	virtual void PreReplication(IRepChangedPropertyTracker& ChangedPropertyTracker) override;
+	virtual void OnRep_ReplicatedMovement() override;
 
 	/** Initialize input action bindings */
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
@@ -79,6 +81,12 @@ public:
 	/** Handles move inputs from either controls or UI interfaces */
 	UFUNCTION(BlueprintCallable, Category="Input")
 	virtual void DoMove(float Right, float Forward);
+
+	UFUNCTION(Server, Reliable)
+	void ServerSetOwnerTestRun(bool bRun, int32 TrialSerial, int32 TransitionId);
+
+	UFUNCTION(Server, Reliable)
+	void ServerSetManualSprint(bool bHeld, uint32 ModeRevision);
 
 	/** Handles look inputs from either controls or UI interfaces */
 	UFUNCTION(BlueprintCallable, Category="Input")

@@ -31,7 +31,7 @@ public class GE_AIReplication : ModuleRules
 
 		if (Target.bBuildEditor)
 		{
-			PrivateDependencyModuleNames.AddRange(new string[] { "UnrealEd", "AnimGraph", "BlueprintGraph", "KismetCompiler" });
+			PrivateDependencyModuleNames.AddRange(new string[] { "UnrealEd", "AnimGraph", "BlueprintGraph", "KismetCompiler", "NetCore", "TraceLog", "TraceServices", "RHI" });
 		}
 
 		PublicIncludePaths.AddRange(new string[] {

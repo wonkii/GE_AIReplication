@@ -16,11 +16,11 @@ All team members and automation tools working in this repository must follow the
 - Review the existing implementation and its call sites before making changes.
 - Use components and interfaces when adding new features. Avoid hard-coding feature behavior.
 - Limit changes to what the request requires and follow the naming and formatting conventions of the surrounding code.
-- When changing replication behavior, check the effects on server authority, the owning client, and remote clients.
+- When changing replication behavior, review the code paths for server authority, the owning client, and remote clients.
 
 ## Build and Verification
 
-- Run the project build relevant to the changed feature.
-- When changing replication behavior, verify the change in a multiplayer environment.
-- At the end of the task, summarize the checks you ran and their results. For any checks you could not run, record why.
+- After implementing code, verify only that the relevant project target builds. Leave automated tests, PIE sessions, and multiplayer runtime verification to the user unless the user explicitly requests that you run them.
+- Report the build target, configuration, and result. If the build could not be verified, describe the blocker.
+- Always finish implementation work with a numbered manual test procedure in execution order. Specify the setup, where to enter each command, when to proceed to the next step, and the expected result or output location. For UI-only steps, list the actions in order. For replication changes, include what to observe on the server, owning client, and remote client.
 - Follow the Saved artifact management rules above for separately collected build logs and test results.
