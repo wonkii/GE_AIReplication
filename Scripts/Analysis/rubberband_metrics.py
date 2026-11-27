@@ -36,7 +36,7 @@ from recording_paths import recording_path
 from task_readme import describe_task, task_id
 
 MODE_NAMES = {0: "Dis", 1: "Lin", 2: "Exp", 3: "Replay"}
-VARIANT_ORDER = ["Dis", "Lin", "Exp", "Exp-0.10", "Exp-0.15", "Exp-0.25", "Exp-0.40", "Ada-T", "Ada-R", "Ada"]
+VARIANT_ORDER = ["Dis", "Lin", "Exp", "Exp-0.10", "Exp-0.15", "Exp-0.25", "Exp-0.40", "Ada-T", "Ada-R", "Ada", "Buf-0.05", "Buf-0.10", "Buf-0.15", "Buf-A"]
 
 
 def condition_info(condition):
@@ -127,9 +127,12 @@ def window_speed(at, time, window=0.05):
     return None if a is None or b is None else norm(sub(b, a)) / window
 
 
-def stop_lags(track, samples, moving=400.0, still=20.0, max_wait=1.0):
-    """Server stop events (50 ms windowed speed falls from > moving to < still cm/s) and how long the shown
-    character keeps moving after each (same test on the visual path). Includes network delay."""
+def stop_lags(track, samples, moving=400.0, still=20.0, max_wait=3.0, hold=0.3, visual_hold=0.15):
+    """Server stop events (50 ms windowed speed falls from > moving to < still cm/s and stays below for `hold` s,
+    so a direction reversal is not a stop) and how long the shown character keeps moving after each
+    (same test on the visual path, which must also stay below `still` for `visual_hold` s: with long smoothing the
+    shown character dips below `still` for a frame as the capsule stops, then keeps creeping toward it).
+    Includes network delay. max_wait covers long smoothing."""
     times = [s["t"] for s in samples]
 
     def visual_at(time):
@@ -151,12 +154,18 @@ def stop_lags(track, samples, moving=400.0, still=20.0, max_wait=1.0):
                 was_moving = True
             elif v < still and was_moving:
                 was_moving = False
+                held = [window_speed(track.at, t + k * 0.05) for k in range(1, int(hold / 0.05) + 1)]
+                if any(h is None or h >= still for h in held):
+                    t += 0.01
+                    continue
                 u = t
                 while u < t + max_wait:
                     w = window_speed(visual_at, u)
                     if w is not None and w < still:
-                        lags.append(u - t)
-                        break
+                        after = [window_speed(visual_at, u + k * 0.025) for k in range(1, int(visual_hold / 0.025) + 1)]
+                        if all(a is not None and a < still for a in after):
+                            lags.append(u - t)
+                            break
                     u += 0.005
         t += 0.01
     return lags

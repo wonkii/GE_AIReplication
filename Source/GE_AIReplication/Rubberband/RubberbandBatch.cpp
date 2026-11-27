@@ -24,6 +24,7 @@ namespace RubberbandBatchDetail
 		bool bUseTime = true, bUseRate = true;
 		FString SmoothTime; // empty = batch default
 		float AdaGain = -1.f, AdaMaxTime = -1.f; // M2 tuning, < 0 = class default
+		float BufDelay = -1.f; bool bBufAdaptive = false; // M4 (mode 4), < 0 = class default
 		FString Prefix; // rb.Plan: "r1J_" (repeat + group) keeps RunIds unique
 	};
 
@@ -46,9 +47,12 @@ namespace RubberbandBatchDetail
 	float EffectiveGain(const FBatchJob& Job) { return Job.AdaGain >= 0.f ? Job.AdaGain : GetDefault<URubberbandMovementComponent>()->JitterGain; }
 	float EffectiveMaxTime(const FBatchJob& Job) { return Job.AdaMaxTime > 0.f ? Job.AdaMaxTime : GetDefault<URubberbandMovementComponent>()->MaxSmoothTime; }
 
-	/** Same labels as the recorder's Variant column: Dis, Lin, Exp, Exp-0.15, Ada, Ada-T, Ada-R, Ada-T-m0.40-g12.0. */
+	float EffectiveBufDelay(const FBatchJob& Job) { return Job.BufDelay > 0.f ? Job.BufDelay : GetDefault<URubberbandMovementComponent>()->BufferDelay; }
+
+	/** Same labels as the recorder's Variant column: Dis, Lin, Exp, Exp-0.15, Ada, Ada-T, Ada-R, Ada-T-m0.40-g12.0, Buf-0.10, Buf-A. */
 	FString VariantName(const FBatchJob& Job, const FString& DefaultTime)
 	{
+		if (Job.Mode == 4) { return Job.bBufAdaptive ? FString(TEXT("Buf-A")) : FString::Printf(TEXT("Buf-%.2f"), EffectiveBufDelay(Job)); }
 		if (Job.Mode == 3)
 		{
 			const FString Name = Job.bUseTime && Job.bUseRate ? TEXT("Ada") : Job.bUseTime ? TEXT("Ada-T") : Job.bUseRate ? TEXT("Ada-R") : TEXT("Ada-0");
@@ -60,8 +64,9 @@ namespace RubberbandBatchDetail
 		return FMath::IsNearlyEqual(Time, 0.06f, 0.001f) || Time <= 0.f ? Name : FString::Printf(TEXT("%s-%.2f"), *Name, Time);
 	}
 
-	/** Mode token: 0|1|2|3, 3t = adaptive time only, 3r = rate limit only, optional @time (e.g. 2@0.15),
-	 *  adaptive tuning after ':' (m = MaxSmoothTime s, g = JitterGain), e.g. 3t:m0.40:g12. */
+	/** Mode token: 0|1|2|3|4, 3t = adaptive time only, 3r = rate limit only, optional @time (e.g. 2@0.15),
+	 *  adaptive tuning after ':' (m = MaxSmoothTime s, g = JitterGain), e.g. 3t:m0.40:g12.
+	 *  4@0.10 = interpolation buffer with a fixed 0.10 s delay, 4a = buffer delay following the jitter. */
 	bool ParseMode(const FString& Token, FBatchJob& Job)
 	{
 		TArray<FString> Parts;
@@ -74,6 +79,12 @@ namespace RubberbandBatchDetail
 		const FString Suffix = Head.Mid(1).ToLower();
 		Job.bUseTime = Suffix != TEXT("r");
 		Job.bUseRate = Suffix != TEXT("t");
+		if (Job.Mode == 4)
+		{
+			if (!Suffix.IsEmpty() && Suffix != TEXT("a")) { return false; }
+			Job.bBufAdaptive = Suffix == TEXT("a");
+			if (!Job.SmoothTime.IsEmpty()) { Job.BufDelay = FCString::Atof(*Job.SmoothTime); Job.SmoothTime.Reset(); }
+		}
 		for (int32 Index = 1; Index < Parts.Num(); ++Index)
 		{
 			const FString Part = Parts[Index].ToLower();
@@ -83,7 +94,7 @@ namespace RubberbandBatchDetail
 			else if (Part.StartsWith(TEXT("g")) && Value >= 0.f) { Job.AdaGain = Value; }
 			else { return false; }
 		}
-		return Job.Mode >= 0 && Job.Mode <= 3;
+		return Job.Mode >= 0 && Job.Mode <= 4;
 	}
 
 	void SetVariable(const TCHAR* Name, const FString& Value)
@@ -167,6 +178,8 @@ namespace RubberbandBatchDetail
 			// Always explicit: "-1 keeps" would leave the previous job's tuning in place.
 			SetVariable(TEXT("rb.Ada.Gain"), FString::SanitizeFloat(EffectiveGain(Job)));
 			SetVariable(TEXT("rb.Ada.MaxTime"), FString::SanitizeFloat(EffectiveMaxTime(Job)));
+			SetVariable(TEXT("rb.Buf.Adaptive"), Job.bBufAdaptive ? TEXT("1") : TEXT("0"));
+			SetVariable(TEXT("rb.Buf.Delay"), FString::SanitizeFloat(EffectiveBufDelay(Job)));
 			UE_LOG(LogRubberbandBatch, Display, TEXT("rb.Batch [%d/%d] %s%s %s: incoming lag %d-%d ms loss %d%% on %d viewer(s)"),
 				Batch->Index + 1, Batch->Jobs.Num(), *Job.Prefix, *Job.Condition, *VariantName(Job, Batch->SmoothTime), Job.LagMin, Job.LagMax, Job.Loss, Viewers);
 			if (Viewers == 0) { Finish(TEXT("No other client window (use Play As Client, 2 players, single process)")); return; }
@@ -230,7 +243,7 @@ namespace RubberbandBatchDetail
 			for (const FString& Mode : Modes)
 			{
 				FBatchJob Job = Parsed;
-				if (!ParseMode(Mode, Job)) { UE_LOG(LogRubberbandBatch, Warning, TEXT("rb.Batch: unknown mode '%s' (0,1,2,3,3t,3r,2@0.15,3t:m0.40:g12)"), *Mode); return false; }
+				if (!ParseMode(Mode, Job)) { UE_LOG(LogRubberbandBatch, Warning, TEXT("rb.Batch: unknown mode '%s' (0,1,2,3,3t,3r,2@0.15,3t:m0.40:g12,4@0.10,4a)"), *Mode); return false; }
 				Job.Prefix = Prefix;
 				State.Jobs.Add(Job);
 			}
@@ -253,7 +266,7 @@ namespace RubberbandBatchDetail
 	FAutoConsoleCommandWithWorldAndArgs BatchCommand(TEXT("rb.Batch"),
 		TEXT("Run all conditions x smoothing modes in one go (single-process PIE, typed in the moving client's window).\n")
 		TEXT("rb.Batch [Loops=3] [Conditions=N0,L100,L200,L300,J50-150,J100-300,L200-P3] [Modes=0,1,2] [SmoothTime=0.06]\n")
-		TEXT("Modes: 0 Dis, 1 Lin, 2 Exp, 3 Ada (3t time only, 3r rate only), @time per mode e.g. 2@0.15, tuning e.g. 3t:m0.40:g12"),
+		TEXT("Modes: 0 Dis, 1 Lin, 2 Exp, 3 Ada (3t time only, 3r rate only), @time per mode e.g. 2@0.15, tuning e.g. 3t:m0.40:g12, 4@0.10 / 4a buffer"),
 		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
 		{
 			URubberbandInputScriptComponent* Script = FindScript(World, TEXT("rb.Batch"));
@@ -268,17 +281,21 @@ namespace RubberbandBatchDetail
 		}));
 
 	/** rb.Plan groups. J: jitter size at a fixed 200 ms mean (where does the default start to pop?).
-	 *  T: fixed smoothing time vs Ada-T (pop vs reaction trade-off). A: Ada-T tuning (default 3t is in T). */
+	 *  T: fixed smoothing time vs Ada-T (pop vs reaction trade-off). A: Ada-T tuning (default 3t is in T).
+	 *  B: interpolation buffer (M4, the standard remedy) vs Exp and Ada-T g12 in the same session.
+	 *  K: gain derived from the pop model (k = 7.6 keeps 99 % of corrections below the pop line), with and without a 0.30 s cap. */
 	struct FPlanGroup { const TCHAR* Key; const TCHAR* Conditions; const TCHAR* Modes; };
 	const FPlanGroup PlanGroups[] = {
 		{ TEXT("J"), TEXT("L200,J190-210,J175-225,J150-250,J125-275,J100-300,J50-350"), TEXT("2,3t") },
 		{ TEXT("T"), TEXT("N0,J50-150,J100-300"), TEXT("2,2@0.10,2@0.15,2@0.25,2@0.40,3t") },
 		{ TEXT("A"), TEXT("N0,J100-300"), TEXT("3t:m0.40,3t:g12,3t:m0.40:g12") },
+		{ TEXT("B"), TEXT("N0,J50-150,J100-300"), TEXT("2,3t:g12,4@0.05,4@0.10,4@0.15,4a") },
+		{ TEXT("K"), TEXT("N0,J150-250,J100-300,J50-350"), TEXT("3t:g7.6,3t:g7.6:m0.30") },
 	};
 
 	FAutoConsoleCommandWithWorldAndArgs PlanCommand(TEXT("rb.Plan"),
 		TEXT("B sweep experiments as one queue, repeat-major (every group once, then again), typed in the moving client's window.\n")
-		TEXT("rb.Plan [Repeats=3] [Groups=J,T,A] [Loops=3]\n")
+		TEXT("rb.Plan [Repeats=3] [Groups=J,T,A] [Loops=3]   (also B: buffer M4, K: model-derived gain)\n")
 		TEXT("J: L200,J190-210..J50-350 x Exp,Ada-T | T: N0,J50-150,J100-300 x Exp 0.06/0.10/0.15/0.25/0.40, Ada-T | A: N0,J100-300 x Ada-T tuning"),
 		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
 		{
@@ -294,7 +311,7 @@ namespace RubberbandBatchDetail
 				{
 					const FPlanGroup* Group = nullptr;
 					for (const FPlanGroup& Candidate : PlanGroups) { if (Key.Equals(Candidate.Key, ESearchCase::IgnoreCase)) { Group = &Candidate; } }
-					if (!Group) { UE_LOG(LogRubberbandBatch, Warning, TEXT("rb.Plan: unknown group '%s' (J, T, A)"), *Key); return; }
+					if (!Group) { UE_LOG(LogRubberbandBatch, Warning, TEXT("rb.Plan: unknown group '%s' (J, T, A, B, K)"), *Key); return; }
 					const FString Prefix = FString::Printf(TEXT("r%d%s_"), Repeat, Group->Key);
 					if (!AddJobs(*State, SplitList(Group->Conditions), SplitList(Group->Modes), Prefix)) { return; }
 				}

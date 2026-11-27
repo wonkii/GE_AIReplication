@@ -1,5 +1,8 @@
 #include "RubberbandRecordingSubsystem.h"
 #include "RubberbandMovementComponent.h"
+#include "RubberbandInputScriptComponent.h"
+#include "GameFramework/PlayerController.h"
+#include "HAL/PlatformMisc.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/Engine.h"
@@ -28,7 +31,7 @@ namespace
 	TAutoConsoleVariable<FString> CVarRbRunId(TEXT("rb.RunId"), TEXT("Run"), TEXT("Recording run id (folder name). Use a new id for every run."));
 	TAutoConsoleVariable<FString> CVarRbCondition(TEXT("rb.Condition"), TEXT("Unlabeled"), TEXT("Network condition label, e.g. N0, L200, J100-300, L200-P3."));
 	TAutoConsoleVariable<FString> CVarRbClientId(TEXT("rb.ClientId"), TEXT(""), TEXT("Optional client label (A, B). Default: -SharpClientId=, PIE instance or process id."));
-	TAutoConsoleVariable<int32> CVarRbSmoothMode(TEXT("rb.Smooth.Mode"), -1, TEXT("Simulated proxy smoothing on clients: -1 keep, 0 Disabled, 1 Linear, 2 Exponential, 3 Adaptive (Exponential + B)."));
+	TAutoConsoleVariable<int32> CVarRbSmoothMode(TEXT("rb.Smooth.Mode"), -1, TEXT("Simulated proxy smoothing on clients: -1 keep, 0 Disabled, 1 Linear, 2 Exponential, 3 Adaptive (Exponential + B), 4 Interpolation buffer (M4)."));
 	TAutoConsoleVariable<int32> CVarRbAdaUseTime(TEXT("rb.Ada.UseTime"), 1, TEXT("Adaptive: 1 = jitter-adaptive smoothing time (M2)."));
 	TAutoConsoleVariable<int32> CVarRbAdaUseRate(TEXT("rb.Ada.UseRate"), 1, TEXT("Adaptive: 1 = catch-up speed limit (M3)."));
 	TAutoConsoleVariable<float> CVarRbAdaGain(TEXT("rb.Ada.Gain"), -1.f, TEXT("Adaptive: seconds of smoothing per second of jitter (<0 keeps)."));
@@ -36,6 +39,13 @@ namespace
 	TAutoConsoleVariable<float> CVarRbAdaMaxTime(TEXT("rb.Ada.MaxTime"), -1.f, TEXT("Adaptive: maximum smoothing time, s (<0 keeps)."));
 	TAutoConsoleVariable<float> CVarRbAdaCatchUp(TEXT("rb.Ada.CatchUpSpeed"), -1.f, TEXT("Adaptive: maximum catch-up speed, cm/s (<0 keeps)."));
 	TAutoConsoleVariable<float> CVarRbAdaMaxOffset(TEXT("rb.Ada.MaxOffset"), -1.f, TEXT("Adaptive: offset above which the rate limit is lifted, cm (<0 keeps)."));
+	TAutoConsoleVariable<int32> CVarRbBufAdaptive(TEXT("rb.Buf.Adaptive"), 0, TEXT("Buffer (mode 4): 1 = delay follows jitter, 0 = fixed rb.Buf.Delay."));
+	TAutoConsoleVariable<float> CVarRbBufDelay(TEXT("rb.Buf.Delay"), -1.f, TEXT("Buffer (mode 4): fixed delay, s (<0 keeps)."));
+	TAutoConsoleVariable<float> CVarRbBufGain(TEXT("rb.Buf.Gain"), -1.f, TEXT("Buffer (mode 4): adaptive delay per second of jitter (<0 keeps)."));
+	TAutoConsoleVariable<float> CVarRbBufBase(TEXT("rb.Buf.Base"), -1.f, TEXT("Buffer (mode 4): adaptive base delay, s (<0 keeps)."));
+	TAutoConsoleVariable<int32> CVarRbAutoScript(TEXT("rb.AutoScript"), 0, TEXT("Moving client: >0 starts the input script with this many loops once recording runs with 2+ players."));
+	TAutoConsoleVariable<int32> CVarRbAutoQuit(TEXT("rb.AutoQuit"), 0, TEXT("1 = exit when the auto script is done (moving client) or when a peer leaves (server, viewer)."));
+	bool GRbWasNetworked = false; // this process has been in a networked world (a standalone world after it = disconnected)
 	TAutoConsoleVariable<float> CVarRbSmoothTime(TEXT("rb.Smooth.LocationTime"), -1.f, TEXT("Simulated proxy NetworkSimulatedSmoothLocationTime on clients; <= 0 keeps the asset value."));
 
 	const FString RbSampleHeader = TEXT("RunId,Condition,Role,ClientId,PlayerId,NetRole,HostTime,ServerTime,Frame,FrameMs");
@@ -59,6 +69,11 @@ namespace
 	/** Smoothing time actually used: CMC caches it in client prediction data when that data is allocated. */
 	float RbEffectiveSmoothTime(const UCharacterMovementComponent& Movement)
 	{
+		// M4 has no smoothing time; report its buffer delay in the same column.
+		if (const URubberbandMovementComponent* Rubber = Cast<URubberbandMovementComponent>(&Movement))
+		{
+			if (Rubber->bInterpBuffer) { return Rubber->ComputeBufferDelay(); }
+		}
 		if (Movement.HasPredictionData_Client())
 		{
 			return const_cast<UCharacterMovementComponent&>(Movement).GetPredictionData_Client_Character()->SmoothNetUpdateTime;
@@ -70,6 +85,10 @@ namespace
 	FString RbVariant(const UCharacterMovementComponent& Movement)
 	{
 		const URubberbandMovementComponent* Rubber = Cast<URubberbandMovementComponent>(&Movement);
+		if (Rubber && Rubber->bInterpBuffer)
+		{
+			return Rubber->bBufferAdaptive ? FString(TEXT("Buf-A")) : FString::Printf(TEXT("Buf-%.2f"), Rubber->BufferDelay);
+		}
 		if (Rubber && Rubber->bAdaptiveSmoothing)
 		{
 			const FString Name = Rubber->bAdaptiveTime && Rubber->bRateLimit ? TEXT("Ada") : Rubber->bAdaptiveTime ? TEXT("Ada-T") : Rubber->bRateLimit ? TEXT("Ada-R") : TEXT("Ada-0");
@@ -135,6 +154,8 @@ void URubberbandRecordingSubsystem::Tick(float DeltaTime)
 	Super::Tick(DeltaTime);
 	if (!GetWorld()) { return; }
 	ApplySmoothingOverrides();
+	TickAutomation();
+	if (bQuitRequested) { return; }
 
 	const bool bWanted = CVarRbRecord.GetValueOnGameThread() != 0;
 	if (bRecording && (!bWanted || RunId != CVarRbRunId.GetValueOnGameThread() || Condition != CVarRbCondition.GetValueOnGameThread()))
@@ -151,6 +172,52 @@ void URubberbandRecordingSubsystem::Tick(float DeltaTime)
 	if (!Files.IsHealthy()) { StopRecording(TEXT("WriteFailed")); }
 }
 
+void URubberbandRecordingSubsystem::TickAutomation()
+{
+	UWorld* World = GetWorld();
+	if (!World || bQuitRequested) { return; }
+	const ENetMode NetMode = World->GetNetMode();
+	if (NetMode == NM_Client || NetMode == NM_DedicatedServer || NetMode == NM_ListenServer) { GRbWasNetworked = true; }
+	const bool bAutoQuit = CVarRbAutoQuit.GetValueOnGameThread() != 0;
+	auto Quit = [this](const TCHAR* Reason)
+	{
+		StopRecording(Reason);
+		bQuitRequested = true;
+		UE_LOG(LogRubberbandRecorder, Display, TEXT("rb.AutoQuit: %s, exiting"), Reason);
+		FPlatformMisc::RequestExit(false);
+	};
+	// Disconnected (server went away): the client falls back to a standalone world.
+	if (bAutoQuit && NetMode == NM_Standalone && GRbWasNetworked) { Quit(TEXT("Disconnected")); return; }
+
+	const AGameStateBase* GameState = World->GetGameState();
+	if (!GameState) { return; }
+	const int32 Players = GameState->PlayerArray.Num();
+	PeakPlayers = FMath::Max(PeakPlayers, Players);
+
+	const int32 AutoLoops = CVarRbAutoScript.GetValueOnGameThread();
+	if (AutoLoops > 0 && !bAutoStarted && bRecording && !IsServer() && Players >= 2 && FPlatformTime::Seconds() - RecordingStartTime >= 3.0)
+	{
+		APlayerController* Controller = World->GetFirstPlayerController();
+		URubberbandInputScriptComponent* Script = Controller && Controller->GetPawn()
+			? Controller->GetPawn()->FindComponentByClass<URubberbandInputScriptComponent>() : nullptr;
+		if (Script && !Script->IsRunning())
+		{
+			Script->bStopRecordingOnComplete = true; // turns rb.Record off 1 s after the last loop
+			bAutoStarted = Script->StartScript(AutoLoops);
+			UE_LOG(LogRubberbandRecorder, Display, TEXT("rb.AutoScript: %s (%d loops)"), bAutoStarted ? TEXT("started") : TEXT("failed"), AutoLoops);
+		}
+	}
+	if (!bAutoQuit) { return; }
+	if (bAutoStarted && !bRecording && CVarRbRecord.GetValueOnGameThread() == 0) { Quit(TEXT("ScriptDone")); return; }
+	if (PeakPlayers >= 2 && Players < 2)
+	{
+		const double Now = FPlatformTime::Seconds();
+		if (PeerLeftTime < 0) { PeerLeftTime = Now; }
+		// The server waits so the viewer also sees the peer leave (and records the tail) before the connection drops.
+		if (Now - PeerLeftTime >= (IsServer() ? 3.0 : 1.0)) { Quit(TEXT("PeerLeft")); }
+	}
+}
+
 void URubberbandRecordingSubsystem::ApplySmoothingOverrides() const
 {
 	if (IsServer()) { return; }
@@ -162,11 +229,26 @@ void URubberbandRecordingSubsystem::ApplySmoothingOverrides() const
 		UCharacterMovementComponent* Movement = It->GetCharacterMovement();
 		if (!Movement || It->GetLocalRole() != ROLE_SimulatedProxy) { continue; }
 		URubberbandMovementComponent* Rubber = Cast<URubberbandMovementComponent>(Movement);
-		if (Mode == 3)
+		if (Mode == 4)
 		{
 			Movement->NetworkSmoothingMode = ENetworkSmoothingMode::Exponential;
 			if (Rubber)
 			{
+				Rubber->bAdaptiveSmoothing = false;
+				Rubber->bInterpBuffer = true;
+				Rubber->bBufferAdaptive = CVarRbBufAdaptive.GetValueOnGameThread() != 0;
+				auto Keep = [](float Value, float& Target) { if (Value >= 0.f) { Target = Value; } };
+				Keep(CVarRbBufDelay.GetValueOnGameThread(), Rubber->BufferDelay);
+				Keep(CVarRbBufGain.GetValueOnGameThread(), Rubber->BufferJitterGain);
+				Keep(CVarRbBufBase.GetValueOnGameThread(), Rubber->BufferBaseDelay);
+			}
+		}
+		else if (Mode == 3)
+		{
+			Movement->NetworkSmoothingMode = ENetworkSmoothingMode::Exponential;
+			if (Rubber)
+			{
+				Rubber->bInterpBuffer = false;
 				Rubber->bAdaptiveSmoothing = true;
 				Rubber->bAdaptiveTime = CVarRbAdaUseTime.GetValueOnGameThread() != 0;
 				Rubber->bRateLimit = CVarRbAdaUseRate.GetValueOnGameThread() != 0;
@@ -181,7 +263,7 @@ void URubberbandRecordingSubsystem::ApplySmoothingOverrides() const
 		else if (Mode >= 0 && Mode <= 2)
 		{
 			Movement->NetworkSmoothingMode = static_cast<ENetworkSmoothingMode>(Mode);
-			if (Rubber) { Rubber->bAdaptiveSmoothing = false; }
+			if (Rubber) { Rubber->bAdaptiveSmoothing = false; Rubber->bInterpBuffer = false; }
 		}
 		if (Time > 0.f)
 		{
@@ -229,7 +311,7 @@ void URubberbandRecordingSubsystem::StartRecording()
 			*FDateTime::UtcNow().ToIso8601(), *RunId, *Condition), *Readme, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
 	}
 	if (!Files.Open(Directory, 4096)) { BlockedKey = RunId + TEXT("/") + Condition; return; }
-	bRecording = true; FlushTime = FPlatformTime::Seconds(); Corrections.Reset();
+	bRecording = true; FlushTime = FPlatformTime::Seconds(); RecordingStartTime = FlushTime; Corrections.Reset();
 	WriteMeta(TEXT("Recording"));
 	UE_LOG(LogRubberbandRecorder, Log, TEXT("Rubberband recording started: %s (%s)"), *Directory, *RoleTag);
 }

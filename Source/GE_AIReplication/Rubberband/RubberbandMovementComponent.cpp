@@ -28,6 +28,56 @@ float URubberbandMovementComponent::ComputeSmoothTime() const
 	return FMath::Clamp(T0 + JitterGain * FMath::Max(0.f, Jitter - JitterDeadZone), T0, FMath::Max(T0, MaxSmoothTime));
 }
 
+float URubberbandMovementComponent::ComputeBufferDelay() const
+{
+	if (!bBufferAdaptive) { return BufferDelay; }
+	return FMath::Clamp(BufferBaseDelay + BufferJitterGain * Jitter, BufferBaseDelay, FMath::Max(BufferBaseDelay, MaxBufferDelay));
+}
+
+void URubberbandMovementComponent::PushBufferedState(const FVector& Location)
+{
+	const UWorld* World = GetWorld();
+	if (!World || !CharacterOwner) { return; }
+	const double Stamp = CharacterOwner->GetReplicatedServerLastTransformUpdateTimeStamp();
+	if (Stamp <= 0.0) { return; }
+	if (StateBuffer.Num() > 0)
+	{
+		if (Stamp <= StateBuffer.Last().ServerTime) { return; } // duplicate or reordered state
+		if (FVector::Dist(Location, StateBuffer.Last().Location) > NetworkNoSmoothUpdateDistance) { StateBuffer.Reset(); } // teleport
+	}
+	// Clock mapping: the fastest arrival sets the offset; release it slowly so clock drift cannot pin it.
+	const double Sample = World->GetRealTimeSeconds() - Stamp;
+	if (!bHasClockOffset || Sample < ClockOffset) { ClockOffset = Sample; bHasClockOffset = true; }
+	else { ClockOffset += (Sample - ClockOffset) * 0.002; }
+	StateBuffer.Add({ Stamp, Location });
+	if (StateBuffer.Num() > 64) { StateBuffer.RemoveAt(0, StateBuffer.Num() - 64); }
+}
+
+bool URubberbandMovementComponent::ComputeBufferedLocation(FVector& OutLocation) const
+{
+	const UWorld* World = GetWorld();
+	if (!World || !bHasClockOffset || StateBuffer.Num() < 2) { return false; }
+	const double RenderTime = World->GetRealTimeSeconds() - ClockOffset - ComputeBufferDelay();
+	int32 Index = 0;
+	while (Index < StateBuffer.Num() && StateBuffer[Index].ServerTime < RenderTime) { ++Index; }
+	if (Index == 0) { OutLocation = StateBuffer[0].Location; return true; }
+	if (Index == StateBuffer.Num())
+	{
+		// Starved: continue the last segment for at most 0.1 s, then hold.
+		const FBufferedState& A = StateBuffer[Index - 2];
+		const FBufferedState& B = StateBuffer[Index - 1];
+		const double Span = FMath::Max(B.ServerTime - A.ServerTime, 0.001);
+		const double Ahead = FMath::Min(RenderTime - B.ServerTime, 0.1);
+		OutLocation = B.Location + (B.Location - A.Location) * static_cast<float>(Ahead / Span);
+		return true;
+	}
+	const FBufferedState& A = StateBuffer[Index - 1];
+	const FBufferedState& B = StateBuffer[Index];
+	const double Alpha = (RenderTime - A.ServerTime) / FMath::Max(B.ServerTime - A.ServerTime, 0.001);
+	OutLocation = FMath::Lerp(A.Location, B.Location, static_cast<float>(FMath::Clamp(Alpha, 0.0, 1.0)));
+	return true;
+}
+
 FString URubberbandMovementComponent::TuningLabel(float Gain, float MaxTime)
 {
 	const URubberbandMovementComponent* Defaults = GetDefault<URubberbandMovementComponent>();
@@ -44,6 +94,7 @@ void URubberbandMovementComponent::SmoothCorrection(const FVector& OldLocation, 
 	if (bSimulated)
 	{
 		UpdateJitter();
+		PushBufferedState(NewLocation);
 		if (bAdaptiveSmoothing && NetworkSmoothingMode == ENetworkSmoothingMode::Exponential)
 		{
 			// M2: Exponential smoothing reads the cached time every frame; set it per correction.
@@ -69,6 +120,20 @@ void URubberbandMovementComponent::SmoothClientPosition(float DeltaSeconds)
 	const FVector Before = Data ? Data->MeshTranslationOffset : FVector::ZeroVector;
 
 	Super::SmoothClientPosition(DeltaSeconds);
+
+	// M4: replace the mesh offset with the buffered (delayed, interpolated) server path.
+	if (bInterpBuffer && NetworkSmoothingMode == ENetworkSmoothingMode::Exponential && CharacterOwner
+		&& CharacterOwner->GetLocalRole() == ROLE_SimulatedProxy && HasPredictionData_Client() && UpdatedComponent)
+	{
+		FVector Desired;
+		if (ComputeBufferedLocation(Desired))
+		{
+			GetPredictionData_Client_Character()->MeshTranslationOffset = Desired - UpdatedComponent->GetComponentLocation();
+			bNetworkSmoothingComplete = false; // keep being called every frame
+			SmoothClientPosition_UpdateVisuals();
+		}
+		return;
+	}
 
 	if (!Data || DeltaSeconds <= 0.f || Before.Size() > RateLimitMaxOffset) { return; }
 	// M3: limit how fast the shown mesh closes the gap, so a large late correction is spread instead of snapped.

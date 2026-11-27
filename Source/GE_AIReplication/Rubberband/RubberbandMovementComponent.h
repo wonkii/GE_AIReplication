@@ -35,6 +35,19 @@ public:
 	/** cm: above this offset the rate limit is lifted so the picture never strays far from the server. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Rubberband|Adaptive", meta=(ClampMin="0")) float RateLimitMaxOffset = 50.f;
 
+	/** M4: draw the simulated proxy from a buffer of received states, a delay behind the newest one (interpolation
+	 *  instead of extrapolation, so a late packet adds delay instead of a jump). Mesh only; the capsule is unchanged. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Rubberband|Buffer") bool bInterpBuffer = false;
+	/** Fixed buffer delay, s. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Rubberband|Buffer", meta=(ClampMin="0")) float BufferDelay = 0.10f;
+	/** Adaptive delay = BufferBaseDelay + BufferJitterGain * J, clamped to MaxBufferDelay (arrival gap p95 ~ 0.02 + 3.9 J measured). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Rubberband|Buffer") bool bBufferAdaptive = false;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Rubberband|Buffer", meta=(ClampMin="0")) float BufferBaseDelay = 0.03f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Rubberband|Buffer", meta=(ClampMin="0")) float BufferJitterGain = 4.f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Rubberband|Buffer", meta=(ClampMin="0")) float MaxBufferDelay = 0.30f;
+	/** Buffer delay this component would use now. */
+	float ComputeBufferDelay() const;
+
 	float GetJitter() const { return Jitter; }
 	float GetLastArrivalGap() const { return LastGap; }
 	bool WasRateLimited() const { return bRateLimitedLastFrame; }
@@ -51,4 +64,11 @@ private:
 	float LastGap = 0.f;
 	bool bRateLimitedLastFrame = false;
 	void UpdateJitter();
+
+	struct FBufferedState { double ServerTime = 0.0; FVector Location = FVector::ZeroVector; };
+	TArray<FBufferedState> StateBuffer;
+	double ClockOffset = 0.0; // min(arrival real time - server stamp), slowly released
+	bool bHasClockOffset = false;
+	void PushBufferedState(const FVector& Location);
+	bool ComputeBufferedLocation(FVector& OutLocation) const;
 };

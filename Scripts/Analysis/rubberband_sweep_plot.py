@@ -25,7 +25,7 @@ METRICS = ["SpikePerMin", "StopLagMs", "SettleMean", "JerkP95", "BigCorrPeakSpee
            "GapAfterShift", "SmoothLocationTime", "JitterMean"]
 # Reference categorical palette (validated, light mode): Exp blue, Ada-T orange, tuning variants after.
 EXP_COLOR, ADA_COLOR = "#257de0", "#f47230"
-TUNE_COLORS = ["#00b894", "#f2a600", "#ee7fac", "#6a4ce2"]
+TUNE_COLORS = ["#00b894", "#f2a600", "#ee7fac", "#008a17", "#6a4ce2", "#ec4647"]
 TEXT, TEXT2, GRID = "#191919", "#666666", "#e6e6e6"
 
 
@@ -122,7 +122,7 @@ def fig_tradeoff(table, out, plt):
     if not conds:
         return "fig_tradeoff: needs N0/J50-150/J100-300 with Exp variants (rb.Plan group T)"
     fig, axes = plt.subplots(1, len(conds), figsize=(4.2 * len(conds), 3.9), dpi=150, squeeze=False)
-    tune_variants = sorted({v for _, v in table if v.startswith("Ada-T-")})
+    tune_variants = sorted({v for _, v in table if v.startswith("Ada-T-")}) + sorted({v for _, v in table if v.startswith("Buf")})
     for ax, cond in zip(axes[0], conds):
         exps = sorted(((exp_time(v), v) for c, v in table if c == cond and exp_time(v)), key=lambda t: t[0])
         pts = [(get(table, cond, v, "StopLagMs"), get(table, cond, v, "SpikePerMin"), t) for t, v in exps]
@@ -131,15 +131,18 @@ def fig_tradeoff(table, out, plt):
                 linewidth=2, label="Exp fixed time")
         for x, y, t in pts:
             ax.annotate(f"{t:.2f}s", (x[0], y[0]), xytext=(5, 5), textcoords="offset points", color=TEXT2, fontsize=7)
-        for variant, color, marker in [("Ada-T", ADA_COLOR, "s")] + [(v, TUNE_COLORS[i % 4], "D") for i, v in enumerate(tune_variants)]:
+        for variant, color, marker in [("Ada-T", ADA_COLOR, "s")] + [(v, TUNE_COLORS[i % len(TUNE_COLORS)], "^" if v.startswith("Buf") else "D") for i, v in enumerate(tune_variants)]:
             x, y = get(table, cond, variant, "StopLagMs"), get(table, cond, variant, "SpikePerMin")
             if not x or not y:
                 continue
+            label = variant.replace("Ada-T-", "Ada-T ").replace("m0", "max0").replace("-g", " g").replace(".0", "") if variant != "Ada-T" else variant
             ax.errorbar(x[0], y[0], xerr=x[1], yerr=y[1], color=color, marker=marker, markersize=8,
-                        markeredgecolor="white", markeredgewidth=1.5, capsize=3, linestyle="none", label=variant)
-            ax.annotate(variant, (x[0], y[0]), xytext=(6, -10), textcoords="offset points", color=TEXT, fontsize=7)
+                        markeredgecolor="white", markeredgewidth=1.5, capsize=3, linestyle="none", label=label)
+            if variant == "Ada-T":
+                ax.annotate(variant, (x[0], y[0]), xytext=(6, 6), textcoords="offset points", color=TEXT, fontsize=7)
         style(ax, cond, "stop reaction lag (ms) - lower is faster", "pops / min - lower is smoother")
-    axes[0][0].legend(frameon=False, fontsize=7, loc="upper right")
+        ax.set_ylim(0, max(20.0, ax.get_ylim()[1]))  # pops of ~1/min are noise; keep the scale honest
+    axes[0][-1].legend(frameon=False, fontsize=7, loc="upper right")
     fig.suptitle("Trade-off: longer fixed smoothing = fewer pops but slower; adaptive moves along it", color=TEXT, fontsize=11, x=0.01, ha="left")
     fig.tight_layout()
     fig.savefig(out / "fig_tradeoff.png")
@@ -160,7 +163,8 @@ def fig_mechanism(table, out, plt):
             ax.errorbar([x for x, _ in pts], [v[0] for _, v in pts], yerr=[v[1] for _, v in pts], color=color,
                         marker=marker, markersize=6, linewidth=2, capsize=3, label=variant)
     ax.axhline(750, color=TEXT2, linewidth=1, linestyle="--")
-    ax.annotate("pop threshold 750 cm/s", (0, 750), xytext=(2, 4), textcoords="offset points", color=TEXT2, fontsize=7)
+    ax.annotate("pop threshold 750 cm/s", (1.0, 750), xycoords=("axes fraction", "data"), xytext=(-2, -10),
+                textcoords="offset points", color=TEXT2, fontsize=7, ha="right")
     style(ax, "Peak screen speed right after big corrections (p95)", "jitter width (ms)", "cm/s")
     ax.legend(frameon=False, fontsize=8)
     fig.tight_layout()
@@ -183,7 +187,7 @@ def write_tables(table, out):
     for m, label in [("SpikePerMin", "튐/분"), ("StopLagMs", "멈춤 반응 지연 ms"), ("SettleMean", "보정 후 수렴 s"),
                      ("BigCorrPeakSpeedP95", "큰 보정 직후 화면 최대 속도 p95 cm/s"), ("BigCorrPopPct", "큰 보정 중 튐 비율 %"),
                      ("GapAfterShift", "지연 뺀 화면-서버 차이 cm"), ("SmoothLocationTime", "평균 스무딩 시간 s")]:
-        variants = sorted({k[1] for k in keys}, key=lambda v: (0 if v == "Exp" else 1 if exp_time(v) else 2, exp_time(v) or 0, v))
+        variants = sorted({k[1] for k in keys}, key=lambda v: (0 if v == "Exp" else 1 if exp_time(v) else 3 if v.startswith("Buf") else 2, exp_time(v) or 0, v))
         conds = sorted({k[0] for k in keys}, key=cond_key)
         lines += [f"## {label}", "", "| 조건 | " + " | ".join(variants) + " |", "|---|" + "---|" * len(variants)]
         for c in conds:
