@@ -16,6 +16,10 @@ Metrics per condition x client x player:
   AccelP95, JerkP95    smoothness of the visual path
   Corrections, CorrDist*, NoSmooth  received corrections (NoSmooth = beyond NetworkNoSmoothUpdateDistance, teleported)
   SettleMean/P95       time from a correction until |visual - capsule| < --settle-cm
+  SpikeNearCorrPct     share of speed spikes that start within --near-corr s after a received correction
+  BigCorrPeakSpeed(P95) peak horizontal visual speed within --near-corr s after corrections >= --big-corr-cm
+                       (mechanism check: a big correction closed too fast = a pop); BigCorrPopPct = share above --max-speed
+  LagMin/LagMax/Loss, JitterSpanMs, Repeat, Group  parsed from the condition label and an rb.Plan RunId (r<k><G>_)
 """
 from __future__ import annotations
 
@@ -23,6 +27,7 @@ import argparse
 import bisect
 import csv
 import math
+import re
 import statistics
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -31,7 +36,26 @@ from recording_paths import recording_path
 from task_readme import describe_task, task_id
 
 MODE_NAMES = {0: "Dis", 1: "Lin", 2: "Exp", 3: "Replay"}
-VARIANT_ORDER = ["Dis", "Lin", "Exp", "Exp-0.15", "Exp-0.25", "Ada-T", "Ada-R", "Ada"]
+VARIANT_ORDER = ["Dis", "Lin", "Exp", "Exp-0.10", "Exp-0.15", "Exp-0.25", "Exp-0.40", "Ada-T", "Ada-R", "Ada"]
+
+
+def condition_info(condition):
+    """N0 | L<ms> | J<min>-<max>, optional -P<loss%> (same grammar as rb.Batch)."""
+    info = {"LagMin": 0, "LagMax": 0, "Loss": 0}
+    m = re.match(r"^(N0|L(\d+)|J(\d+)-(\d+))(?:-P(\d+))?$", condition or "", re.I)
+    if m:
+        if m.group(2):
+            info["LagMin"] = info["LagMax"] = int(m.group(2))
+        elif m.group(3):
+            info["LagMin"], info["LagMax"] = int(m.group(3)), int(m.group(4))
+        info["Loss"] = int(m.group(5) or 0)
+    info["JitterSpanMs"] = info["LagMax"] - info["LagMin"]
+    return info
+
+
+def run_info(run_id):
+    m = re.search(r"_r(\d+)([A-Za-z])_", run_id or "")
+    return {"Repeat": int(m.group(1)), "Group": m.group(2).upper()} if m else {"Repeat": None, "Group": None}
 
 
 def read_csv(path: Path) -> list[dict[str, str]]:
@@ -157,6 +181,7 @@ def analyse_player(samples, track, corrections, args):
 
     pops = spikes = 0
     speeds, accels, jerks = [], [], []
+    hspeeds, spike_times = [], []
     prev_v = prev_a = None
     for a, b in zip(samples, samples[1:]):
         dt = b["t"] - a["t"]
@@ -168,8 +193,11 @@ def analyse_player(samples, track, corrections, args):
         if s0 is not None and s1 is not None and norm(sub(step, sub(s1, s0))) > args.pop_cm:
             pops += 1
         v = (step[0] / dt, step[1] / dt, step[2] / dt)
-        if norm((v[0], v[1], 0.0)) > args.max_speed:
+        hs = norm((v[0], v[1], 0.0))
+        hspeeds.append((b["t"], hs))
+        if hs > args.max_speed:
             spikes += 1
+            spike_times.append(b["t"])
         speeds.append(norm(v))
         if prev_v is not None:
             acc = ((v[0] - prev_v[0]) / dt, (v[1] - prev_v[1]) / dt, (v[2] - prev_v[2]) / dt)
@@ -188,6 +216,24 @@ def analyse_player(samples, track, corrections, args):
                 settle.append(samples[i]["t"] - c["t"])
                 break
             i += 1
+    corr_times = sorted(c["t"] for c in corrections)
+    near = 0
+    for t in spike_times:
+        i = bisect.bisect_right(corr_times, t)
+        if i > 0 and t - corr_times[i - 1] <= args.near_corr:
+            near += 1
+    hs_times = [h[0] for h in hspeeds]
+    peaks = []
+    for c in corrections:
+        if c["dist"] < args.big_corr_cm or c["no_smooth"]:
+            continue
+        i = bisect.bisect_right(hs_times, c["t"])
+        window = []
+        while i < len(hspeeds) and hspeeds[i][0] - c["t"] <= args.near_corr:
+            window.append(hspeeds[i][1])
+            i += 1
+        if window:
+            peaks.append(max(window))
     span = samples[-1]["t"] - samples[0]["t"] if len(samples) > 1 else 0.0
     lags = stop_lags(track, samples)
     dists = [c["dist"] for c in corrections]
@@ -206,6 +252,9 @@ def analyse_player(samples, track, corrections, args):
         "BestShiftSec": r(best[0], 3), "GapAfterShift": r(best[1]),
         "PopCount": pops, "PopPerMin": r(pops / span * 60 if span else None),
         "SpeedSpikes": spikes, "SpikePerMin": r(spikes / span * 60 if span else None),
+        "SpikeNearCorrPct": r(100.0 * near / spikes, 1) if spikes else None,
+        "BigCorrs": len(peaks), "BigCorrPeakSpeed": r(mean(peaks), 0), "BigCorrPeakSpeedP95": r(pct(peaks, 0.95), 0),
+        "BigCorrPopPct": r(100.0 * sum(1 for v in peaks if v > args.max_speed) / len(peaks), 1) if peaks else None,
         "AccelP95": r(pct(accels, 0.95), 0), "JerkP95": r(pct(jerks, 0.95), 0),
         "Corrections": len(corrections), "CorrPerSec": r(len(corrections) / span if span else None),
         "CorrDistMean": r(mean(dists)), "CorrDistP95": r(pct(dists, 0.95)), "CorrDistMax": r(max(dists) if dists else None),
@@ -251,7 +300,8 @@ def analyse_condition(folder: Path, args):
             if track is None or len(samples) < 10:
                 continue
             metrics, curve = analyse_player(samples, track, corr_by_player.get(pid, []), args)
-            ident = {"RunId": run_id, "Condition": condition, "ClientId": client, "PlayerId": pid}
+            ident = {"RunId": run_id, **run_info(run_id), "Condition": condition, **condition_info(condition),
+                     "ClientId": client, "PlayerId": pid}
             rows.append({**ident, **metrics})
             curves += [{**ident, "ShiftSec": round(d, 3), "MeanGap": round(e, 3)} for d, e in curve]
     return rows, curves
@@ -280,7 +330,10 @@ def markdown(rows):
 def matrix(rows, key, label):
     present = {r["SmoothingMode"] for r in rows}
     modes = [m for m in VARIANT_ORDER if m in present] + sorted(present - set(VARIANT_ORDER))
-    conds = sorted({r["Condition"] for r in rows})
+    def cond_key(c):
+        i = condition_info(c)
+        return (i["LagMin"] + i["LagMax"], i["JitterSpanMs"], i["Loss"], c)
+    conds = sorted({r["Condition"] for r in rows}, key=cond_key)
     lines = [f"### {label}", "", "| 조건 | " + " | ".join(modes) + " |", "|---|" + "---|" * len(modes)]
     for c in conds:
         cells = []
@@ -307,6 +360,8 @@ def main():
     ap.add_argument("--max-shift", type=float, default=0.6)
     ap.add_argument("--shift-step", type=float, default=0.01)
     ap.add_argument("--batch", help="only RunIds starting with this id (rb.Batch prints it)")
+    ap.add_argument("--near-corr", type=float, default=0.1, help="window after a correction (s) for SpikeNearCorrPct/BigCorrPeakSpeed")
+    ap.add_argument("--big-corr-cm", type=float, default=15.0, help="corrections at least this large count for BigCorrPeakSpeed")
     ap.add_argument("--min-travel", type=float, default=100.0, help="skip players that moved less than this on the server (cm)")
     args = ap.parse_args()
 
@@ -329,6 +384,9 @@ def main():
     write_csv(out / "shift_curve.csv", curves)
     views = "\n\n".join(matrix(rows, k, l) for k, l in [
         ("SpikePerMin", "튐/분: 화면 속도가 최대 이동 속도의 1.5배를 넘은 프레임 (낮을수록 좋음)"),
+        ("BigCorrPeakSpeedP95", "원인 확인: 15cm 이상 보정 직후 0.1s 안 화면 최대 속도 p95 cm/s (750 넘으면 튐)"),
+        ("BigCorrPopPct", "원인 확인: 15cm 이상 보정 중 튐(750cm/s 초과)으로 이어진 비율 %"),
+        ("SpikeNearCorrPct", "원인 확인: 튐 중 보정 직후 0.1s 안에 생긴 비율 %"),
         ("StopLagMs", "멈춤 반응 지연 ms: 서버에서 멈춘 뒤 화면이 멈출 때까지 (중앙값, 네트워크 지연 포함)"),
         ("PopPerMin", "참고: 서버 이동과 8cm 넘게 다른 프레임/분 (프레임 이동량과 비슷해 잡음이 큼)"), ("SettleMean", "보정 후 수렴 시간 s (끌려감)"),
         ("GapMean", "같은 시각 화면-서버 차이 cm"), ("BestShiftSec", "추정 지연 s (조건과 맞는지 확인)"),

@@ -28,6 +28,15 @@ float URubberbandMovementComponent::ComputeSmoothTime() const
 	return FMath::Clamp(T0 + JitterGain * FMath::Max(0.f, Jitter - JitterDeadZone), T0, FMath::Max(T0, MaxSmoothTime));
 }
 
+FString URubberbandMovementComponent::TuningLabel(float Gain, float MaxTime)
+{
+	const URubberbandMovementComponent* Defaults = GetDefault<URubberbandMovementComponent>();
+	FString Label;
+	if (!FMath::IsNearlyEqual(MaxTime, Defaults->MaxSmoothTime, 0.001f)) { Label += FString::Printf(TEXT("-m%.2f"), MaxTime); }
+	if (!FMath::IsNearlyEqual(Gain, Defaults->JitterGain, 0.01f)) { Label += FString::Printf(TEXT("-g%.1f"), Gain); }
+	return Label;
+}
+
 void URubberbandMovementComponent::SmoothCorrection(const FVector& OldLocation, const FQuat& OldRotation,
 	const FVector& NewLocation, const FQuat& NewRotation)
 {

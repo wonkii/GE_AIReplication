@@ -41,6 +41,9 @@ public:
 	/** Smoothing time this component would apply now (T0 when not adaptive). */
 	float ComputeSmoothTime() const;
 
+	/** Variant suffix for M2 tuning: "" with the class defaults, else e.g. "-m0.40-g12.0". Shared by the recorder and rb.Batch. */
+	static FString TuningLabel(float Gain, float MaxTime);
+
 private:
 	double LastArrival = -1.0;
 	float LastServerStamp = -1.f;

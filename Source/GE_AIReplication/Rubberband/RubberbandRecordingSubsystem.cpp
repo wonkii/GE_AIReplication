@@ -72,7 +72,8 @@ namespace
 		const URubberbandMovementComponent* Rubber = Cast<URubberbandMovementComponent>(&Movement);
 		if (Rubber && Rubber->bAdaptiveSmoothing)
 		{
-			return Rubber->bAdaptiveTime && Rubber->bRateLimit ? TEXT("Ada") : Rubber->bAdaptiveTime ? TEXT("Ada-T") : Rubber->bRateLimit ? TEXT("Ada-R") : TEXT("Ada-0");
+			const FString Name = Rubber->bAdaptiveTime && Rubber->bRateLimit ? TEXT("Ada") : Rubber->bAdaptiveTime ? TEXT("Ada-T") : Rubber->bRateLimit ? TEXT("Ada-R") : TEXT("Ada-0");
+			return Rubber->bAdaptiveTime ? Name + URubberbandMovementComponent::TuningLabel(Rubber->JitterGain, Rubber->MaxSmoothTime) : Name;
 		}
 		FString Name;
 		switch (Movement.NetworkSmoothingMode)
