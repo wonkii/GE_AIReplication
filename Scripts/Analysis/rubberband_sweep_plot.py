@@ -25,7 +25,8 @@ METRICS = ["SpikePerMin", "StopLagMs", "SettleMean", "JerkP95", "BigCorrPeakSpee
            "GapAfterShift", "SmoothLocationTime", "JitterMean"]
 # Reference categorical palette (validated, light mode): Exp blue, Ada-T orange, tuning variants after.
 EXP_COLOR, ADA_COLOR = "#257de0", "#f47230"
-TUNE_COLORS = ["#00b894", "#f2a600", "#ee7fac", "#008a17", "#6a4ce2", "#ec4647"]
+TUNE_COLORS = ["#00b894", "#f2a600", "#ee7fac", "#008a17"]
+BUF_COLOR, BUF_MARKERS = "#6a4ce2", ["^", "v", "<", ">"]
 TEXT, TEXT2, GRID = "#191919", "#666666", "#e6e6e6"
 
 
@@ -131,15 +132,22 @@ def fig_tradeoff(table, out, plt):
                 linewidth=2, label="Exp fixed time")
         for x, y, t in pts:
             ax.annotate(f"{t:.2f}s", (x[0], y[0]), xytext=(5, 5), textcoords="offset points", color=TEXT2, fontsize=7)
-        for variant, color, marker in [("Ada-T", ADA_COLOR, "s")] + [(v, TUNE_COLORS[i % len(TUNE_COLORS)], "^" if v.startswith("Buf") else "D") for i, v in enumerate(tune_variants)]:
+        ada_tunes = [v for v in tune_variants if v.startswith("Ada-T-")]
+        bufs = [v for v in tune_variants if v.startswith("Buf")]
+        series = [("Ada-T", ADA_COLOR, "s")] + [(v, TUNE_COLORS[i % 4], "D") for i, v in enumerate(ada_tunes)] \
+            + [(v, BUF_COLOR, BUF_MARKERS[i % len(BUF_MARKERS)]) for i, v in enumerate(bufs)]  # one hue for the buffer family
+        for variant, color, marker in series:
             x, y = get(table, cond, variant, "StopLagMs"), get(table, cond, variant, "SpikePerMin")
             if not x or not y:
                 continue
-            label = variant.replace("Ada-T-", "Ada-T ").replace("m0", "max0").replace("-g", " g").replace(".0", "") if variant != "Ada-T" else variant
+            if variant.startswith("Ada-T-"):
+                label = "Ada-T " + variant[len("Ada-T-"):].replace("m0", "max0").replace("-g", " g").replace("g12.0", "g12")
+            else:
+                label = variant
             ax.errorbar(x[0], y[0], xerr=x[1], yerr=y[1], color=color, marker=marker, markersize=8,
                         markeredgecolor="white", markeredgewidth=1.5, capsize=3, linestyle="none", label=label)
-            if variant == "Ada-T":
-                ax.annotate(variant, (x[0], y[0]), xytext=(6, 6), textcoords="offset points", color=TEXT, fontsize=7)
+            if variant == "Ada-T" or variant.startswith("Buf"):
+                ax.annotate(label, (x[0], y[0]), xytext=(6, 6), textcoords="offset points", color=TEXT, fontsize=7)
         style(ax, cond, "stop reaction lag (ms) - lower is faster", "pops / min - lower is smoother")
         ax.set_ylim(0, max(20.0, ax.get_ylim()[1]))  # pops of ~1/min are noise; keep the scale honest
     axes[0][-1].legend(frameon=False, fontsize=7, loc="upper right")

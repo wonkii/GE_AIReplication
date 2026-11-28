@@ -27,7 +27,7 @@ param(
     [string]$BatchId = ('S' + (Get-Date -Format 'MMdd-HHmm')),
 
     [string]$Editor = 'C:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\UnrealEditor.exe',
-    [string]$Project = (Join-Path $PSScriptRoot '..\GE_AIReplication.uproject'),
+    [string]$Project = '',           # 비우면 이 스크립트 기준 ..\GE_AIReplication.uproject
     [string]$Map = '/Game/YHJ/Rubberband/Lv_Rubberband',
     [int]$Port = 7777,
 
@@ -111,6 +111,11 @@ function Wait-Exit($Proc, [int]$TimeoutSec, [string]$Label) {
 }
 
 # ------------------------------------------------------------------ 준비
+if (-not $Project) {
+    # PowerShell 5.1 -File 실행에서는 param 기본값 시점에 $PSScriptRoot가 비어 있을 수 있어 여기서 정한다
+    $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+    $Project = Join-Path $scriptDir '..\GE_AIReplication.uproject'
+}
 $Project = [IO.Path]::GetFullPath($Project)
 if (-not $DryRun) {
     if (-not (Test-Path $Editor)) { throw "UnrealEditor.exe를 찾을 수 없음: $Editor (-Editor로 지정)" }

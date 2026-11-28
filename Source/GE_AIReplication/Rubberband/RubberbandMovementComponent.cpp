@@ -12,7 +12,8 @@ void URubberbandMovementComponent::UpdateJitter()
 	LastGap = LastArrival >= 0.0 ? static_cast<float>(Arrival - LastArrival) : 0.f;
 	// RFC 3550 6.4.1: D = (R_i - R_j) - (S_i - S_j), J += (|D| - J) / 16. Clock offsets cancel.
 	// Stamps of 0 (not replicated) or not newer (duplicate/reordered state) carry no timing information.
-	if (ServerStamp > 0.f && LastServerStamp > 0.f && ServerStamp > LastServerStamp && LastArrival >= 0.0)
+	// Pauses (no updates while standing still) are not jitter: skip them (see JitterMaxGap).
+	if (ServerStamp > 0.f && LastServerStamp > 0.f && ServerStamp > LastServerStamp && LastArrival >= 0.0 && LastGap <= JitterMaxGap)
 	{
 		const double D = (Arrival - LastArrival) - static_cast<double>(ServerStamp - LastServerStamp);
 		Jitter += (static_cast<float>(FMath::Abs(D)) - Jitter) / 16.f;
@@ -46,7 +47,10 @@ void URubberbandMovementComponent::PushBufferedState(const FVector& Location)
 		if (FVector::Dist(Location, StateBuffer.Last().Location) > NetworkNoSmoothUpdateDistance) { StateBuffer.Reset(); } // teleport
 	}
 	// Clock mapping: the fastest arrival sets the offset; release it slowly so clock drift cannot pin it.
+	// The stamp is the moving client's move time, which stops while it stands still: after a pause the offset
+	// jumps by the pause length. Re-sync (and drop the old states) instead of drawing far ahead of the buffer.
 	const double Sample = World->GetRealTimeSeconds() - Stamp;
+	if (bHasClockOffset && Sample - ClockOffset > JitterMaxGap) { StateBuffer.Reset(); bHasClockOffset = false; }
 	if (!bHasClockOffset || Sample < ClockOffset) { ClockOffset = Sample; bHasClockOffset = true; }
 	else { ClockOffset += (Sample - ClockOffset) * 0.002; }
 	StateBuffer.Add({ Stamp, Location });

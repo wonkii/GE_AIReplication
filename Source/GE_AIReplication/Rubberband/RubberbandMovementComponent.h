@@ -27,6 +27,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Rubberband|Adaptive") bool bRateLimit = true;
 	/** Jitter (s) treated as noise; measured 0.005-0.008 s without emulated jitter. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Rubberband|Adaptive", meta=(ClampMin="0")) float JitterDeadZone = 0.010f;
+	/** Arrival gaps longer than this (s) are pauses (the character stood still, the server sent nothing), not jitter:
+	 *  skipped like silence periods in VoIP jitter estimation. Without it one 50 s pause adds ~3 s to the estimate. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Rubberband|Adaptive", meta=(ClampMin="0.05")) float JitterMaxGap = 0.5f;
 	/** Seconds of extra smoothing per second of jitter above the dead zone. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Rubberband|Adaptive", meta=(ClampMin="0")) float JitterGain = 6.f;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Rubberband|Adaptive", meta=(ClampMin="0.01")) float MaxSmoothTime = 0.25f;
